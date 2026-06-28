@@ -1,6 +1,8 @@
 import os
 import json
 import urllib.request
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -41,8 +43,6 @@ BUSINESSES = [
     ("Boshqa soha",       "boshqa"),
 ]
 
-BIZ_LIST = "\n".join([f"{b[1]} = {b[0]}" for b in BUSINESSES])
-
 def tg(method, data):
     url = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method
     body = json.dumps(data).encode()
@@ -56,9 +56,8 @@ def tg(method, data):
         return {}
 
 def detect_business(text):
-    prompt = f"""Foydalanuvchi: "{text}"
-Biznes kodini toping: {BIZ_LIST}
-Faqat kod yozing."""
+    BIZ_LIST = "\n".join([f"{b[1]} = {b[0]}" for b in BUSINESSES])
+    prompt = f"""Foydalanuvchi: "{text}"\nBiznes kodini toping:\n{BIZ_LIST}\nFaqat kod yozing."""
     try:
         body = json.dumps({
             "model": "claude-haiku-4-5-20251001",
@@ -78,34 +77,36 @@ Faqat kod yozing."""
         print("Claude error:", e)
         return None
 
-def send_menu(chat_id, bc_id=None):
-    keyboard = []
-    for i in range(0, len(BUSINESSES), 2):
-        row = [{"text": BUSINESSES[i][0], "callback_data": "biz:" + BUSINESSES[i][1]}]
-        if i + 1 < len(BUSINESSES):
-            row.append({"text": BUSINESSES[i+1][0], "callback_data": "biz:" + BUSINESSES[i+1][1]})
-        keyboard.append(row)
-    data = {"chat_id": chat_id, "text": "Biznesingiz turini tanlang:", "reply_markup": {"inline_keyboard": keyboard}}
+def send_msg(chat_id, text, bc_id=None):
+    data = {"chat_id": chat_id, "text": text}
     if bc_id:
         data["business_connection_id"] = bc_id
     tg("sendMessage", data)
+
+def followup(chat_id, biz_name, bc_id):
+    """Send follow-up after 5 minutes"""
+    time.sleep(300)
+    msg = (
+        f"Hurmatli mijoz, siz {biz_name} uchun AI agentni ko'rib chiqdingizmi?\n\n"
+        f"Ko'pchilik biznes egalari birinchi marta ko'rib: \"Bu menga kerak emas\" deb o'ylashadi. "
+        f"Lekin raqamlar boshqacha gapiradi:\n\n"
+        f"✅ 24/7 ishlaydi — siz uxlaganda ham mijozlarga javob beradi\n"
+        f"✅ 1 agent = 2-3 menejer ishi\n"
+        f"✅ Birinchi oydan o'zini qoplaydi\n\n"
+        f"Hozir bepul konsultatsiya oling — 15 daqiqa vaqtingizni olamiz, biznesingizga qanday mos kelishini aniq ko'rsatamiz."
+    )
+    send_msg(chat_id, msg, bc_id)
 
 def send_link(chat_id, biz_key, biz_name, bc_id=None):
     link = DEMO_URL + "?b=" + biz_key
-    data = {"chat_id": chat_id, "text": biz_name + " uchun AI agent demosi:\n\n" + link}
-    if bc_id:
-        data["business_connection_id"] = bc_id
-    tg("sendMessage", data)
+    send_msg(chat_id, f"{biz_name} uchun AI agent demosi:\n\n{link}", bc_id)
+    # Schedule follow-up in background
+    t = threading.Thread(target=followup, args=(chat_id, biz_name, bc_id), daemon=True)
+    t.start()
 
-def process_message(chat_id, text, bc_id=None):
-    if not text:
-        return
-    biz_key = detect_business(text)
-    if biz_key:
-        biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
-        send_link(chat_id, biz_key, biz_name, bc_id)
-    else:
-        send_menu(chat_id, bc_id)
+def is_from_site(text):
+    """Check if message came from site demo button"""
+    return "uchun AI agent demosini ko'rishni xohlayman" in text
 
 def handle(update):
     if "business_connection" in update:
@@ -117,30 +118,41 @@ def handle(update):
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "").strip()
         bc_id = msg.get("business_connection_id")
-        process_message(chat_id, text, bc_id)
+
+        if not text:
+            return
+
+        # Only respond to messages from site
+        if not is_from_site(text):
+            return
+
+        biz_key = detect_business(text)
+        if biz_key:
+            biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
+            send_link(chat_id, biz_key, biz_name, bc_id)
         return
 
     if "message" in update:
         msg = update["message"]
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "").strip()
+
         if text.startswith("/start"):
-            tg("sendMessage", {"chat_id": chat_id, "text": "Assalomu alaykum! Biznesingiz haqida yozing:"})
-            send_menu(chat_id)
+            send_msg(chat_id, "Bot ishlayapti!")
             return
-        process_message(chat_id, text)
+
+        # Only respond if from site
+        if not is_from_site(text):
+            return
+
+        biz_key = detect_business(text)
+        if biz_key:
+            biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
+            send_link(chat_id, biz_key, biz_name)
 
     elif "callback_query" in update:
         cb = update["callback_query"]
-        chat_id = cb["message"]["chat"]["id"]
-        msg_id = cb["message"]["message_id"]
-        data = cb.get("data", "")
-        if data.startswith("biz:"):
-            biz_key = data[4:]
-            biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
-            tg("answerCallbackQuery", {"callback_query_id": cb["id"]})
-            tg("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": "Tanlandi: " + biz_name})
-            send_link(chat_id, biz_key, biz_name)
+        tg("answerCallbackQuery", {"callback_query_id": cb["id"]})
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -158,13 +170,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        # Check bot info
         me = tg("getMe", {})
-        webhook = tg("getWebhookInfo", {})
         info = f"Bot: @{me.get('result',{}).get('username','?')}\n"
         info += f"can_connect_to_business: {me.get('result',{}).get('can_connect_to_business', False)}\n"
-        info += f"Webhook: {webhook.get('result',{}).get('url','none')}\n"
-        info += f"Allowed updates: {webhook.get('result',{}).get('allowed_updates','none')}"
         self.wfile.write(info.encode())
 
     def log_message(self, format, *args):
@@ -173,11 +181,8 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     if WEBHOOK_URL:
-        # Delete old webhook first
         tg("deleteWebhook", {"drop_pending_updates": True})
-        import time
         time.sleep(1)
-        # Set new webhook with all business updates
         result = tg("setWebhook", {
             "url": WEBHOOK_URL,
             "allowed_updates": [
@@ -187,9 +192,6 @@ if __name__ == "__main__":
             ],
             "drop_pending_updates": True
         })
-        print("Webhook result:", result)
-        # Check bot capabilities
-        me = tg("getMe", {})
-        print("Bot info:", me)
+        print("Webhook:", result)
     print("Bot running on port", port)
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
