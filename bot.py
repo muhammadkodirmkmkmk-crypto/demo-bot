@@ -6,42 +6,43 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DEMO_URL = os.environ.get("DEMO_URL", "https://sayt-production-f9ed.up.railway.app/demo")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 
 BUSINESSES = [
     ("Internet do'kon",      "internet_dokon"),
     ("Go'zallik saloni",     "gozallik"),
-    ("Klinika",              "klinika"),
-    ("Restoran / Kafe",      "restoran"),
-    ("Fitnes klub",          "fitnes"),
-    ("Taom yetkazish",       "taom_yetkazish"),
-    ("Rieltorlik",           "rieltor"),
-    ("Mehmonxona",           "mehmonxona"),
-    ("Online kurslar",       "online_kurs"),
-    ("Marketing agentlik",   "marketing"),
-    ("Avtoservis",           "avtoservis"),
-    ("Yuk tashish",          "yuk_tashish"),
-    ("Avtosalon",            "avtosalon"),
-    ("IT kompaniya",         "it_kompaniya"),
+    ("Klinika",               "klinika"),
+    ("Restoran / Kafe",       "restoran"),
+    ("Fitnes klub",           "fitnes"),
+    ("Taom yetkazish",        "taom_yetkazish"),
+    ("Rieltorlik",            "rieltor"),
+    ("Mehmonxona",            "mehmonxona"),
+    ("Online kurslar",        "online_kurs"),
+    ("Marketing agentlik",    "marketing"),
+    ("Avtoservis",            "avtoservis"),
+    ("Yuk tashish",           "yuk_tashish"),
+    ("Avtosalon",             "avtosalon"),
+    ("IT kompaniya",          "it_kompaniya"),
     ("Roznitsa do'kon",      "roznitsa"),
-    ("Til maktabi",          "til_maktabi"),
-    ("Bolalar markazi",      "bolalar_markazi"),
-    ("Kuryer xizmati",       "kuryer"),
-    ("Buxgalteriya",         "buxgalteriya"),
-    ("Qurilish",             "qurilish"),
-    ("Ulgurji savdo",        "ulgurji"),
-    ("Mebel saloni",         "mebel"),
-    ("Ombor / Logistika",    "ombor"),
-    ("Uy-joy ijarasi",       "ijara"),
-    ("Repetitorlik",         "repetitor"),
-    ("Konditeriya",          "konditeriya"),
-    ("Catering",             "catering"),
-    ("Ishlab chiqarish",     "ishlab_chiqarish"),
-    ("Yuridik firma",        "yuridik"),
-    ("Boshqa soha",          "boshqa"),
+    ("Til maktabi",           "til_maktabi"),
+    ("Bolalar markazi",       "bolalar_markazi"),
+    ("Kuryer xizmati",        "kuryer"),
+    ("Buxgalteriya",          "buxgalteriya"),
+    ("Qurilish",              "qurilish"),
+    ("Ulgurji savdo",         "ulgurji"),
+    ("Mebel saloni",          "mebel"),
+    ("Ombor / Logistika",     "ombor"),
+    ("Uy-joy ijarasi",        "ijara"),
+    ("Repetitorlik",          "repetitor"),
+    ("Konditeriya",           "konditeriya"),
+    ("Catering",              "catering"),
+    ("Ishlab chiqarish",      "ishlab_chiqarish"),
+    ("Yuridik firma",         "yuridik"),
+    ("Boshqa soha",           "boshqa"),
 ]
 
 def tg(method, data):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    url = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method
     body = json.dumps(data).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -49,11 +50,10 @@ def tg(method, data):
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
     except Exception as e:
-        print(f"TG error: {e}")
+        print("TG error:", e)
         return {}
 
-def send_business_menu(chat_id):
-    # Build inline keyboard 2 columns
+def send_menu(chat_id):
     keyboard = []
     for i in range(0, len(BUSINESSES), 2):
         row = []
@@ -61,62 +61,46 @@ def send_business_menu(chat_id):
         if i + 1 < len(BUSINESSES):
             row.append({"text": BUSINESSES[i+1][0], "callback_data": "biz:" + BUSINESSES[i+1][1]})
         keyboard.append(row)
-
     tg("sendMessage", {
         "chat_id": chat_id,
-        "text": "Biznesingiz turini tanlang 👇",
+        "text": "Biznesingiz turini tanlang:",
         "reply_markup": {"inline_keyboard": keyboard}
     })
 
-def send_demo_link(chat_id, biz_key, biz_name):
-    link = f"{DEMO_URL}?b={biz_key}"
+def send_link(chat_id, biz_key, biz_name):
+    link = DEMO_URL + "?b=" + biz_key
     tg("sendMessage", {
         "chat_id": chat_id,
-        "text": f"✅ *{biz_name}* uchun AI agent demosi tayyor!\n\n👇 Quyidagi havolani bosing:\n{link}\n\n_Demo bilan tanishib chiqing. Savollar bo'lsa yozing!_",
-        "parse_mode": "Markdown"
+        "text": "Demo tayyor! " + biz_name + " uchun AI agentni sinab koring:\n\n" + link,
     })
 
-def handle_update(update):
-    # Handle /start or any message
+def handle(update):
     if "message" in update:
-        msg = update["message"]
-        chat_id = msg["chat"]["id"]
-        text = msg.get("text", "")
+        chat_id = update["message"]["chat"]["id"]
+        text = update["message"].get("text", "")
+        tg("sendMessage", {
+            "chat_id": chat_id,
+            "text": "Assalomu alaykum! Biznesingiz turini tanlang:"
+        })
+        send_menu(chat_id)
 
-        if text.startswith("/start") or text.lower() in ["salom", "hello", "demo", "/demo"]:
-            tg("sendMessage", {
-                "chat_id": chat_id,
-                "text": "Assalomu alaykum! 👋\n\nSizning biznesingiz uchun *AI agent demosini* ko'rmoqchimisiz?\n\nQuyidan biznesingiz turini tanlang:",
-                "parse_mode": "Markdown"
-            })
-            send_business_menu(chat_id)
-        else:
-            send_business_menu(chat_id)
-
-    # Handle button click
     elif "callback_query" in update:
         cb = update["callback_query"]
         chat_id = cb["message"]["chat"]["id"]
-        data = cb.get("data", "")
         msg_id = cb["message"]["message_id"]
-
+        data = cb.get("data", "")
         if data.startswith("biz:"):
             biz_key = data[4:]
             biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
-
-            # Answer callback
             tg("answerCallbackQuery", {"callback_query_id": cb["id"]})
-
-            # Edit original message
             tg("editMessageText", {
                 "chat_id": chat_id,
                 "message_id": msg_id,
-                "text": f"✅ Tanlandi: *{biz_name}*",
-                "parse_mode": "Markdown"
+                "text": "Tanlandi: " + biz_name
             })
+            send_link(chat_id, biz_key, biz_name)
 
-            # Send demo link
-            send_demo_link(chat_id, biz_key, biz_name)
+webhook_set = False
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -124,31 +108,31 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         try:
             update = json.loads(body)
-            handle_update(update)
+            handle(update)
         except Exception as e:
-            print(f"Error: {e}")
+            print("Error:", e)
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
 
     def do_GET(self):
+        global webhook_set
+        if not webhook_set and WEBHOOK_URL:
+            result = tg("setWebhook", {"url": WEBHOOK_URL})
+            print("Webhook set:", result)
+            webhook_set = True
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Demo bot is running!")
+        self.wfile.write(b"Bot is running!")
 
     def log_message(self, format, *args):
         pass
 
-def set_webhook(port):
-    # Webhook will be set via Railway URL
-    webhook_url = os.environ.get("WEBHOOK_URL", "")
-    if webhook_url:
-        result = tg("setWebhook", {"url": webhook_url})
-        print(f"Webhook set: {result}")
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    set_webhook(port)
-    print(f"Bot server running on port {port}")
+    if WEBHOOK_URL:
+        result = tg("setWebhook", {"url": WEBHOOK_URL})
+        print("Webhook set on startup:", result)
+    print("Bot running on port", port)
     server = HTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()
