@@ -56,16 +56,13 @@ def tg(method, data):
         return {}
 
 def detect_business(text):
-    """Use Claude to detect business type from user message"""
     prompt = f"""Foydalanuvchi quyidagi xabarni yozdi: "{text}"
 
-Quyidagi biznes turlaridan biri qaysi ekanini aniqlang va FAQAT biznes kodini qaytaring (boshqa hech narsa yozmang):
+Quyidagi biznes turlaridan mosini toping va FAQAT kodni yozing:
 
 {BIZ_LIST}
 
-Agar aniq aniqlash mumkin bo'lmasa, "boshqa" deb yozing.
-Faqat kod yozing, masalan: gozallik"""
-
+Agar aniqlab bo'lmasa "boshqa" yozing. Faqat kod, boshqa hech narsa."""
     try:
         body = json.dumps({
             "model": "claude-haiku-4-5-20251001",
@@ -82,37 +79,71 @@ Faqat kod yozing, masalan: gozallik"""
         with urllib.request.urlopen(req, timeout=15) as r:
             res = json.loads(r.read())
             code = res["content"][0]["text"].strip().lower()
-            # Validate
             valid = [b[1] for b in BUSINESSES]
             return code if code in valid else None
     except Exception as e:
         print("Claude error:", e)
         return None
 
-def send_menu(chat_id):
+def send_menu(chat_id, business_connection_id=None):
     keyboard = []
     for i in range(0, len(BUSINESSES), 2):
         row = [{"text": BUSINESSES[i][0], "callback_data": "biz:" + BUSINESSES[i][1]}]
         if i + 1 < len(BUSINESSES):
             row.append({"text": BUSINESSES[i+1][0], "callback_data": "biz:" + BUSINESSES[i+1][1]})
         keyboard.append(row)
-    tg("sendMessage", {
+    data = {
         "chat_id": chat_id,
         "text": "Biznesingiz turini tanlang:",
         "reply_markup": {"inline_keyboard": keyboard}
-    })
+    }
+    if business_connection_id:
+        data["business_connection_id"] = business_connection_id
+    tg("sendMessage", data)
 
-def send_link(chat_id, biz_key, biz_name):
+def send_link(chat_id, biz_key, biz_name, business_connection_id=None):
     link = DEMO_URL + "?b=" + biz_key
-    tg("sendMessage", {
+    data = {
         "chat_id": chat_id,
         "text": biz_name + " uchun AI agent demosi:\n\n" + link
-    })
+    }
+    if business_connection_id:
+        data["business_connection_id"] = business_connection_id
+    tg("sendMessage", data)
 
 def handle(update):
+    # Handle business_connection (when user connects bot to TG Business)
+    if "business_connection" in update:
+        bc = update["business_connection"]
+        print("Business connection:", bc)
+        return
+
+    # Handle business messages (messages in owner's personal chats)
+    if "business_message" in update:
+        msg = update["business_message"]
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "").strip()
+        bc_id = msg.get("business_connection_id", None)
+
+        if not text:
+            return
+
+        tg("sendChatAction", {"chat_id": chat_id, "action": "typing",
+                               "business_connection_id": bc_id} if bc_id else {"chat_id": chat_id, "action": "typing"})
+
+        biz_key = detect_business(text)
+        if biz_key:
+            biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
+            send_link(chat_id, biz_key, biz_name, bc_id)
+        else:
+            send_menu(chat_id, bc_id)
+        return
+
+    # Handle regular bot messages
     if "message" in update:
-        chat_id = update["message"]["chat"]["id"]
-        text = update["message"].get("text", "").strip()
+        msg = update["message"]
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "").strip()
 
         if not text:
             return
@@ -125,15 +156,12 @@ def handle(update):
             send_menu(chat_id)
             return
 
-        # Try to auto-detect business
         tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
         biz_key = detect_business(text)
-
         if biz_key:
             biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
             send_link(chat_id, biz_key, biz_name)
         else:
-            # Can't detect - show menu
             tg("sendMessage", {"chat_id": chat_id, "text": "Biznesingiz turini aniqlay olmadim. Quyidan tanlang:"})
             send_menu(chat_id)
 
@@ -146,11 +174,7 @@ def handle(update):
             biz_key = data[4:]
             biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
             tg("answerCallbackQuery", {"callback_query_id": cb["id"]})
-            tg("editMessageText", {
-                "chat_id": chat_id,
-                "message_id": msg_id,
-                "text": "Tanlandi: " + biz_name
-            })
+            tg("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": "Tanlandi: " + biz_name})
             send_link(chat_id, biz_key, biz_name)
 
 class Handler(BaseHTTPRequestHandler):
@@ -177,7 +201,18 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     if WEBHOOK_URL:
-        result = tg("setWebhook", {"url": WEBHOOK_URL})
+        # Set webhook with business allowed updates
+        result = tg("setWebhook", {
+            "url": WEBHOOK_URL,
+            "allowed_updates": [
+                "message",
+                "callback_query",
+                "business_connection",
+                "business_message",
+                "edited_business_message",
+                "deleted_business_messages"
+            ]
+        })
         print("Webhook:", result)
     print("Bot running on port", port)
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
