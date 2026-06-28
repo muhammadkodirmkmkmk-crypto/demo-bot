@@ -56,23 +56,16 @@ def tg(method, data):
         return {}
 
 def detect_business(text):
-    prompt = f"""Foydalanuvchi quyidagi xabarni yozdi: "{text}"
-
-Quyidagi biznes turlaridan mosini toping va FAQAT kodni yozing:
-
-{BIZ_LIST}
-
-Agar aniqlab bo'lmasa "boshqa" yozing. Faqat kod, boshqa hech narsa."""
+    prompt = f"""Foydalanuvchi: "{text}"
+Biznes kodini toping: {BIZ_LIST}
+Faqat kod yozing."""
     try:
         body = json.dumps({
             "model": "claude-haiku-4-5-20251001",
             "max_tokens": 20,
             "messages": [{"role": "user", "content": prompt}]
         }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=body, method="POST"
-        )
+        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         req.add_header("x-api-key", ANTHROPIC_KEY)
         req.add_header("anthropic-version", "2023-06-01")
@@ -85,85 +78,57 @@ Agar aniqlab bo'lmasa "boshqa" yozing. Faqat kod, boshqa hech narsa."""
         print("Claude error:", e)
         return None
 
-def send_menu(chat_id, business_connection_id=None):
+def send_menu(chat_id, bc_id=None):
     keyboard = []
     for i in range(0, len(BUSINESSES), 2):
         row = [{"text": BUSINESSES[i][0], "callback_data": "biz:" + BUSINESSES[i][1]}]
         if i + 1 < len(BUSINESSES):
             row.append({"text": BUSINESSES[i+1][0], "callback_data": "biz:" + BUSINESSES[i+1][1]})
         keyboard.append(row)
-    data = {
-        "chat_id": chat_id,
-        "text": "Biznesingiz turini tanlang:",
-        "reply_markup": {"inline_keyboard": keyboard}
-    }
-    if business_connection_id:
-        data["business_connection_id"] = business_connection_id
+    data = {"chat_id": chat_id, "text": "Biznesingiz turini tanlang:", "reply_markup": {"inline_keyboard": keyboard}}
+    if bc_id:
+        data["business_connection_id"] = bc_id
     tg("sendMessage", data)
 
-def send_link(chat_id, biz_key, biz_name, business_connection_id=None):
+def send_link(chat_id, biz_key, biz_name, bc_id=None):
     link = DEMO_URL + "?b=" + biz_key
-    data = {
-        "chat_id": chat_id,
-        "text": biz_name + " uchun AI agent demosi:\n\n" + link
-    }
-    if business_connection_id:
-        data["business_connection_id"] = business_connection_id
+    data = {"chat_id": chat_id, "text": biz_name + " uchun AI agent demosi:\n\n" + link}
+    if bc_id:
+        data["business_connection_id"] = bc_id
     tg("sendMessage", data)
+
+def process_message(chat_id, text, bc_id=None):
+    if not text:
+        return
+    biz_key = detect_business(text)
+    if biz_key:
+        biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
+        send_link(chat_id, biz_key, biz_name, bc_id)
+    else:
+        send_menu(chat_id, bc_id)
 
 def handle(update):
-    # Handle business_connection (when user connects bot to TG Business)
     if "business_connection" in update:
-        bc = update["business_connection"]
-        print("Business connection:", bc)
+        print("Business connected:", update["business_connection"])
         return
 
-    # Handle business messages (messages in owner's personal chats)
     if "business_message" in update:
         msg = update["business_message"]
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "").strip()
-        bc_id = msg.get("business_connection_id", None)
-
-        if not text:
-            return
-
-        tg("sendChatAction", {"chat_id": chat_id, "action": "typing",
-                               "business_connection_id": bc_id} if bc_id else {"chat_id": chat_id, "action": "typing"})
-
-        biz_key = detect_business(text)
-        if biz_key:
-            biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
-            send_link(chat_id, biz_key, biz_name, bc_id)
-        else:
-            send_menu(chat_id, bc_id)
+        bc_id = msg.get("business_connection_id")
+        process_message(chat_id, text, bc_id)
         return
 
-    # Handle regular bot messages
     if "message" in update:
         msg = update["message"]
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "").strip()
-
-        if not text:
-            return
-
         if text.startswith("/start"):
-            tg("sendMessage", {
-                "chat_id": chat_id,
-                "text": "Assalomu alaykum! Biznesingiz haqida yozing yoki quyidan tanlang:"
-            })
+            tg("sendMessage", {"chat_id": chat_id, "text": "Assalomu alaykum! Biznesingiz haqida yozing:"})
             send_menu(chat_id)
             return
-
-        tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-        biz_key = detect_business(text)
-        if biz_key:
-            biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
-            send_link(chat_id, biz_key, biz_name)
-        else:
-            tg("sendMessage", {"chat_id": chat_id, "text": "Biznesingiz turini aniqlay olmadim. Quyidan tanlang:"})
-            send_menu(chat_id)
+        process_message(chat_id, text)
 
     elif "callback_query" in update:
         cb = update["callback_query"]
@@ -193,7 +158,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot running!")
+        # Check bot info
+        me = tg("getMe", {})
+        webhook = tg("getWebhookInfo", {})
+        info = f"Bot: @{me.get('result',{}).get('username','?')}\n"
+        info += f"can_connect_to_business: {me.get('result',{}).get('can_connect_to_business', False)}\n"
+        info += f"Webhook: {webhook.get('result',{}).get('url','none')}\n"
+        info += f"Allowed updates: {webhook.get('result',{}).get('allowed_updates','none')}"
+        self.wfile.write(info.encode())
 
     def log_message(self, format, *args):
         pass
@@ -201,18 +173,23 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     if WEBHOOK_URL:
-        # Set webhook with business allowed updates
+        # Delete old webhook first
+        tg("deleteWebhook", {"drop_pending_updates": True})
+        import time
+        time.sleep(1)
+        # Set new webhook with all business updates
         result = tg("setWebhook", {
             "url": WEBHOOK_URL,
             "allowed_updates": [
-                "message",
-                "callback_query",
-                "business_connection",
-                "business_message",
-                "edited_business_message",
-                "deleted_business_messages"
-            ]
+                "message", "callback_query",
+                "business_connection", "business_message",
+                "edited_business_message", "deleted_business_messages"
+            ],
+            "drop_pending_updates": True
         })
-        print("Webhook:", result)
+        print("Webhook result:", result)
+        # Check bot capabilities
+        me = tg("getMe", {})
+        print("Bot info:", me)
     print("Bot running on port", port)
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
