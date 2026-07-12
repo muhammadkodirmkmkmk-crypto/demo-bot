@@ -40,6 +40,7 @@ BUSINESSES = [
     ("Catering",          "catering"),
     ("Ishlab chiqarish",  "ishlab_chiqarish"),
     ("Yuridik firma",     "yuridik"),
+    ("Tur agentlik",      "tur_agentlik"),
     ("Boshqa soha",       "boshqa"),
 ]
 
