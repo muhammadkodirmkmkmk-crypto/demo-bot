@@ -108,8 +108,25 @@ Mijozlar @businessaiuz akkauntiga yozadi, sen kompaniya nomidan javob berasan.
 TIL: mijoz qaysi tilda yozsa (o'zbek lotin / o'zbek kirill / rus), aynan shu tilda javob ber.
 Aralash bo'lsa — mijozning oxirgi xabari tilida.
 
-USLUB: xuddi tajribali, samimiy jonli menejer kabi. Qisqa xabarlar (odatda 2-5 jumla), Telegram uslubida,
-ortiqcha emoji va uzun ro'yxatlarsiz. Markdown belgilari (**, ##) ishlatma. Bitta xabarda bitta savol ber.
+USLUB — ENG MUHIM QOIDA: oddiy odam Telegramda qanday yozsa, shunday yoz.
+- Salomlashish faqat suhbat boshida, har xabarda emas.
+- Juda qisqa: 1-2 jumla, ko'pi bilan ~25 so'z. Uzun tushuntirish, ro'yxat, "✅" punktlar, sarlavhalar YO'Q.
+- Savolga to'g'ridan-to'g'ri javob ber. Narx so'rasa — narxni ayt va bitta qisqa savol ber. Hamma narsani birdaniga aytma.
+- "Qisqa qilib", "Juda yaxshi savol", "Albatta!" kabi robotcha iboralar ishlatma. Reklama matnidek yozma.
+- Jonli so'zlashuv tili: "Assalomu alaykum", "Ha, bor", "Tushundim", "Здравствуйте", "Да, конечно", "Понял".
+- Emoji — juda kam (ko'pi bilan bitta, ko'pincha umuman yo'q). Markdown (**, ##) ishlatma.
+- Har qanday savolga (hatto mavzudan tashqari bo'lsa ham) odamdek tabiiy javob ber, keyin kerak bo'lsa yumshoq qilib xizmatlarga qayt.
+- Fikr ikki qismdan iborat bo'lsa, ularni bo'sh qator bilan ajrat — ular alohida xabar bo'lib ketadi (ko'pi bilan 2 qism).
+
+MISOLLAR (uslub uchun):
+Mijoz: "Salom, CRM qancha turadi?"
+Sen: "Assalomu alaykum! CRM $990 dan boshlanadi, aniq narx jarayonlaringizga bog'liq. Qanday biznesingiz bor?"
+Mijoz: "Сколько стоит бот?"
+Sen: "Здравствуйте! Telegram-бот с ИИ — $99 в месяц, либо выкуп за $1490. Для какого бизнеса нужен?"
+Mijoz: "Qayerdasizlar?"
+Sen: "Toshkentdamiz. Lekin hammasini onlayn ham qilsa bo'ladi — sizga qaysi biri qulay?"
+Mijoz: "Бот это или человек?"
+Sen: "Я ИИ-ассистент AI Business 🙂 Если нужно, подключу живого менеджера."
 
 MAQSAD — dialogni natijaga olib borish:
 1. Salomlash, mijozning biznesi va muammosini bil (qanday biznes, hozir nima qiyin, nimani xohlaydi).
@@ -138,7 +155,7 @@ BILIM BAZASI:
 """ + KNOWLEDGE
 
 FOLLOWUP_PROMPT = """Mijoz oxirgi xabaringga javob bermadi. Bu {n}-eslatma ({total} tadan).
-Yuqoridagi suhbatni hisobga olib, mijozga BITTA qisqa (1-3 jumla) muloyim xabar yoz — xuddi jonli menejer
+Yuqoridagi suhbatni hisobga olib, mijozga BITTA juda qisqa (1 jumla, ~15 so'z) muloyim xabar yoz — xuddi jonli menejer
 "suhbatni davom ettirish" uchun yozganidek. Mijozning tilida yoz.
 {stage}
 Takrorlanma, oldingi eslatmalardan farqli bo'lsin. Bosim, yolg'on shoshilinchlik va o'ylab topilgan aksiyalar yo'q.
@@ -226,6 +243,21 @@ def typing(chat_id, bc_id=None):
     if bc_id:
         data["business_connection_id"] = bc_id
     tg("sendChatAction", data)
+
+
+TYPING_DELAY = os.environ.get("TYPING_DELAY", "1") != "0"
+
+
+def send_human(chat_id, text, bc_id=None):
+    """Odamdek yuborish: bo'sh qator bo'yicha 2 tagacha xabar, orasida 'yozmoqda...'"""
+    parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(parts) > 2:
+        parts = [parts[0], "\n\n".join(parts[1:])]
+    for i, p in enumerate(parts):
+        if TYPING_DELAY:
+            typing(chat_id, bc_id)
+            time.sleep(min(1.2 + len(p) / 35.0, 5.0))
+        send_msg(chat_id, p, bc_id)
 
 
 def claude(system, messages, max_tokens=600, model=None):
@@ -318,12 +350,12 @@ def ai_reply(key):
     if not msgs:
         return
     typing(c["chat_id"], c["bc_id"])
-    raw = claude(SYSTEM_PROMPT, msgs)
+    raw = claude(SYSTEM_PROMPT, msgs, max_tokens=300)
     if not raw:
         return
     text, tags = parse_tags(raw)
     if text:
-        send_msg(c["chat_id"], text, c["bc_id"])
+        send_human(c["chat_id"], text, c["bc_id"])
         with LOCK:
             c["history"].append({"r": "a", "t": text, "ts": time.time()})
     for name, fields in tags:
