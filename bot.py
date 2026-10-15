@@ -105,8 +105,9 @@ Muddatlar va aniq narx loyiha hajmiga bog'liq — konsultatsiyada aytiladi.
 SYSTEM_PROMPT = """Sen — AI Business UZ kompaniyasining Telegramdagi sotuv menejerisan (AI agent).
 Mijozlar @businessaiuz akkauntiga yozadi, sen kompaniya nomidan javob berasan.
 
-TIL: mijoz qaysi tilda yozsa (o'zbek lotin / o'zbek kirill / rus), aynan shu tilda javob ber.
-Aralash bo'lsa — mijozning oxirgi xabari tilida.
+TIL VA YOZUV: mijozning oxirgi xabari qaysi til va qaysi alifboda bo'lsa, aynan shunday javob ber:
+- o'zbekcha lotin → o'zbekcha lotin; o'zbekcha KIRILL (масалан: "нархи қанча", "борми", "керак") → o'zbekcha KIRILL;
+- ruscha → ruscha. Har bir javob oldidan tizim sizga mijozning yozuvini aytadi — unga qat'iy amal qil.
 
 USLUB — ENG MUHIM QOIDA: oddiy odam Telegramda qanday yozsa, shunday yoz.
 - Salomlashish faqat suhbat boshida, har xabarda emas.
@@ -129,8 +130,13 @@ Mijoz: "Бот это или человек?"
 Sen: "Я ИИ-ассистент AI Business 🙂 Если нужно, подключу живого менеджера."
 
 MAQSAD — dialogni natijaga olib borish:
-1. Salomlash, mijozning biznesi va muammosini bil (qanday biznes, hozir nima qiyin, nimani xohlaydi).
-2. Ehtiyojga mos xizmatni tavsiya qil, narx va foydasini aniq tushuntir (pul/vaqt tejash, yo'qotilgan mijozlar).
+1. AVVAL MIJOZNI BIL. Mijozning biznesi va ehtiyoji hali aniq bo'lmasa — mahsulot haqida batafsil gapirma,
+   afzalliklarni sanama. Savoliga juda qisqa javob ber (masalan, faqat boshlang'ich narx) va bitta savol ber.
+   Quyidagilarni birma-bir, har xabarda BITTA savol bilan bilib ol:
+   a) qanday biznes / nima sotadi; b) hozir qanday muammo yoki nima kerak (sayt yo'qmi, mijozlar yo'qolyaptimi,
+   hisob-kitob chalkashmi...); c) hozir nima ishlatadi (Excel, daftar, Telegram, boshqa tizim);
+   d) qancha xodim / mijoz oqimi, muddat yoki byudjet (kerak bo'lsa).
+2. Faqat shundan keyin — uning ehtiyojiga mos BITTA yechimni tavsiya qil, uning so'zlari bilan foydasini ayt (1-2 jumla).
 3. E'tirozlarga ishonchli javob ber (qimmat → foyda va $99/oy obuna variantini ko'rsat; "keyinroq" → bepul konsultatsiya
    hech narsaga majburlamasligini ayt; "ishonmayman" → 22+ mijoz, 24/7 yordam, hozir u bilan gaplashayotgan agentning o'zi demo).
 4. Har doim aniq keyingi qadamni taklif qil: bepul konsultatsiya (qo'ng'iroq yoki uchrashuv) uchun
@@ -139,7 +145,8 @@ MAQSAD — dialogni natijaga olib borish:
 
 QAT'IY QOIDALAR:
 - Faqat quyidagi bilim bazasidagi faktlar va narxlarni ishlat. O'ylab topilgan chegirma, aksiya, kafolat, keys,
-  muddat yoki raqam aytma. Bilmasang — "aniq javobni menejerimiz konsultatsiyada beradi" de.
+  muddat, NARX ORALIG'I (masalan "$290-500") yoki raqam aytma. Narxni tushirish so'ralsa — "aniq narx vazifaga bog'liq,
+  menejer konsultatsiyada eng mos variantni hisoblab beradi" de, o'zing chegirma va'da qilma. Bilmasang — "aniq javobni menejerimiz konsultatsiyada beradi" de.
 - Yolg'on shoshilinchlik yaratma, bosim qilma. Mijoz aniq rad etsa — hurmat bilan xayrlash.
 - Mavzudan tashqari savollarga qisqa javob berib, suhbatni xizmatlarga qaytar.
 - Agar mijoz "siz botmisiz?" desa — rost ayt: ha, AI agentman, kerak bo'lsa jonli menejerga ulayman.
@@ -309,6 +316,31 @@ def build_messages(history):
     return msgs
 
 
+MAX_REPLY_CHARS = int(os.environ.get("MAX_REPLY_CHARS", "260"))
+UZ_CYR_LETTERS = set("ўқғҳЎҚҒҲ")
+UZ_CYR_WORDS = re.compile(r"(?i)\b(борми|йўқ|керак|қанча|нархи|салом|ассалому|рахмат|раҳмат|бизнес[иа]м|қилиш|қилса|бўлади|мумкинми|иложи|сизлар|сизларда|менга|нима|қандай|канча|канака|бор|ха|хоп|яхши|кечирасиз)\b")
+UZ_SUFFIX = re.compile(r"(ми|лар|ларни|ларга|ларда|миз|сиз|ган|моқчи|мокчи|япти|ябди|ади|ини|нинг|дан|чи)$")
+RU_SUFFIX = re.compile(r"(ость|ться|тся|ешь|ете|ого|ому|ыми|ией|ание|ение)$")
+RU_WORDS = re.compile(r"(?i)\b(сколько|стоит|можно|нужно|нужен|здравствуйте|привет|спасибо|хочу|какой|какая|есть|сайт|цена|это|как|что)\b")
+
+
+def script_hint(text):
+    """Mijoz xabarining tili/alifbosi bo'yicha qat'iy ko'rsatma"""
+    cyr = sum(1 for ch in text if "Ѐ" <= ch <= "ӿ")
+    lat = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+    if cyr > lat:
+        words = re.findall(r"[\u0400-\u04ff]+", text.lower())
+        uz_score = len(UZ_CYR_WORDS.findall(text)) + sum(1 for w in words if UZ_SUFFIX.search(w))
+        ru_score = len(RU_WORDS.findall(text)) + sum(1 for w in words if RU_SUFFIX.search(w))
+        uz = any(ch in UZ_CYR_LETTERS for ch in text) or uz_score > ru_score
+        if uz:
+            return "TIZIM: mijoz O'ZBEK tilida KIRILL alifbosida yozdi. Javobni FAQAT o'zbek tilida, KIRILL alifbosida yoz (ў, қ, ғ, ҳ harflari bilan)."
+        return "SYSTEM: клиент пишет по-русски. Отвечай только по-русски."
+    if lat:
+        return "TIZIM: mijoz LOTIN alifbosida yozdi. Javobni o'zbek tilida, LOTIN alifbosida yoz (agar mijoz boshqa tilda yozmagan bo'lsa)."
+    return ""
+
+
 TAG_RE = re.compile(r"\[\[(LEAD|STOP|HANDOFF)([^\]]*)\]\]")
 
 
@@ -350,10 +382,19 @@ def ai_reply(key):
     if not msgs:
         return
     typing(c["chat_id"], c["bc_id"])
-    raw = claude(SYSTEM_PROMPT, msgs, max_tokens=300)
+    last_user = next((h["t"] for h in reversed(c["history"]) if h["r"] == "u"), "")
+    raw = claude(SYSTEM_PROMPT + "\n\n" + script_hint(last_user), msgs, max_tokens=250)
     if not raw:
         return
     text, tags = parse_tags(raw)
+    if len(text) > MAX_REPLY_CHARS:
+        short = claude(
+            "Sen matnni qisqartiruvchisan. Ma'noni, tilni va alifboni (lotin/kirill) saqla. Yangi fakt qo'shma.",
+            [{"role": "user", "content": "Bu Telegram xabarini oddiy odam yozgandek 1-2 qisqa jumlaga (" + str(MAX_REPLY_CHARS)
+              + " belgigacha) qisqartir. Oxiridagi savolni saqla. Faqat natijani yoz:\n\n" + text}],
+            max_tokens=200)
+        if short:
+            text = parse_tags(short)[0]
     if text:
         send_human(c["chat_id"], text, c["bc_id"])
         with LOCK:
@@ -479,7 +520,8 @@ def send_followup(key):
                 merged[-1]["content"] += "\n" + m["content"]
             else:
                 merged.append(m)
-        text, _ = parse_tags(claude(SYSTEM_PROMPT, merged, max_tokens=300))
+        last_user = next((h["t"] for h in reversed(c["history"]) if h["r"] == "u"), "")
+        text, _ = parse_tags(claude(SYSTEM_PROMPT + "\n\n" + script_hint(last_user), merged, max_tokens=200))
         with LOCK:
             c["followups"] = n
         if text:
