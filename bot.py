@@ -1,14 +1,15 @@
 """
-AI Business UZ — sotuvchi AI agent (Telegram Business), v4.
+AI Business UZ — sotuvchi AI agent (Telegram Business), v5.
 
-* 24/7 odamdek javob beradi: o'zbek (lotin / kirill) va rus tilida — mijoz qanday yozsa, shunday.
+* 24/7 odamdek, xushmuomala javob: o'zbek (lotin / kirill) va rus tilida — mijoz qanday yozsa, shunday.
+* Model o'zbekchani doim LOTINDA yozadi, kirillga dastur o'zi o'giradi (aralash alifbo va xato harflar bo'lmaydi).
+* Til aniqlagich 1000 ta sinov dialogida (7572 xabar) 99.8% aniqlik bilan tekshirilgan.
+* Mijoz ketma-ket bir nechta xabar yozsa — bot DEBOUNCE_SEC kutib, hammasiga bitta javob beradi.
 * Birinchi javob — 3 ta qisqa xabar: salom → ishlar qalay → savolni aniqlashtirish.
-* Avval mijozning biznesi va ehtiyojini biladi, keyin bitta mos yechim taklif qiladi.
-* Suhbat xotirasi va "mijoz haqida ma'lum faktlar" Postgres'da saqlanadi (DATABASE_URL), qayta deploy'da yo'qolmaydi.
-* Qo'riqchilar: o'ylab topilgan raqamlar, aralash alifbo, takroriy savollar, uzun matn, axlat belgilar.
-* Mijoz "qizisa" (tayyorlik >= HOT_THRESHOLD) yoki telefon bersa — REPORT_CHAT_ID ga hisobot.
-* Mijoz jim qolsa — 24 soat ichida 3 tagacha qisqa, takrorlanmaydigan eslatma.
-* Ega chatga o'zi yozsa — bot shu chatda HUMAN_PAUSE_HOURS soat jim turadi.
+* Xotira (suhbat + mijoz haqida faktlar) Postgres'da (DATABASE_URL).
+* Qo'riqchilar: o'ylab topilgan raqamlar, takroriy gaplar, uzun matn, axlat belgilar.
+* Issiq mijoz / lid / menejer so'rovi — REPORT_CHAT_ID ga hisobot.
+* Mijoz jim qolsa — 24 soat ichida 3 tagacha qisqa eslatma. Ega o'zi yozsa — bot jim turadi.
 """
 import os
 import re
@@ -17,6 +18,7 @@ import time
 import difflib
 import threading
 import urllib.request
+import urllib.error
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -26,23 +28,28 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DEMO_URL = os.environ.get("DEMO_URL", "https://sayt-production-f9ed.up.railway.app/demo")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+# Javoblar uchun model; ishlamasa ro'yxatdagi keyingisiga o'tadi
+MODELS = [m.strip() for m in os.environ.get(
+    "CLAUDE_MODEL", "claude-sonnet-5-5,claude-haiku-5-5,claude-haiku-4-5-20251001").split(",") if m.strip()]
 DETECT_MODEL = os.environ.get("DETECT_MODEL", "claude-haiku-4-5-20251001")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-# Hisobotlar (issiq lid, telefon, menejer so'rovi) shu Telegram ID ga ketadi
 REPORT_CHAT_ID = os.environ.get("REPORT_CHAT_ID", os.environ.get("ADMIN_CHAT_ID", "7871931220"))
 HOT_THRESHOLD = int(os.environ.get("HOT_THRESHOLD", "70"))
 AI_REPLIES = os.environ.get("AI_REPLIES", "1") != "0"
 TYPING_DELAY = os.environ.get("TYPING_DELAY", "1") != "0"
+DEBOUNCE_SEC = float(os.environ.get("DEBOUNCE_SEC", "6"))
 HUMAN_PAUSE_HOURS = float(os.environ.get("HUMAN_PAUSE_HOURS", "12"))
 FOLLOWUP_MINUTES = [int(x) for x in os.environ.get("FOLLOWUP_MINUTES", "20,180,1260").split(",") if x.strip()]
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
-MAX_MSG_CHARS = int(os.environ.get("MAX_MSG_CHARS", "170"))     # bitta xabar
-MAX_REPLY_CHARS = int(os.environ.get("MAX_REPLY_CHARS", "320"))  # butun javob
-TZ = timezone(timedelta(hours=5))  # Toshkent
+MAX_MSG_CHARS = int(os.environ.get("MAX_MSG_CHARS", "170"))
+MAX_REPLY_CHARS = int(os.environ.get("MAX_REPLY_CHARS", "320"))
+TZ = timezone(timedelta(hours=5))
 QUIET_FROM, QUIET_TO = 23, 9
 TG_WINDOW = 23.5 * 3600
 MAX_HISTORY = 60
+
+C0, C1 = chr(0x400), chr(0x4FF)          # kirill harflari oralig'i
+CYR_CLASS = "[" + C0 + "-" + C1 + "]"
 
 BUSINESSES = [
     ("Internet do'kon",   "internet_dokon"),
@@ -81,71 +88,88 @@ BUSINESSES = [
 # ==========================================================================
 # PROMPT
 # ==========================================================================
-KNOWLEDGE = """AI Business UZ (businessai.uz), Ташкент. IT и AI-решения для бизнеса. 22+ компаний работают с нами: заводы, клиники, учебные центры и др.
-Контакты: Telegram @businessaiuz, телефон +998 93 890 02 02. Консультация бесплатно. На каждую услугу — техподдержка 24/7.
-Услуги и СТАРТОВЫЕ цены (точная сумма — только на консультации):
-- Сайты: лендинг (одностраничный) — от $290, обычно готов за несколько дней; сайт средней сложности — от $590; корпоративный сложный — от $1090. Анимированный дизайн, быстрые, под телефон, нацелены на заявки.
-- CRM — от $990: с нуля под процесс продаж клиента; база клиентов и сделок, воронка и задачи, интеграция с Telegram и AI; без платы за пользователей. Можно связать с 1С или другой текущей системой (детали — на консультации).
-- ERP — от $1990: склад, финансы, производство, сотрудники, отчёты в реальном времени в одной системе.
-- Мобильное приложение iOS + Android — от $4490: дизайн, backend и админка, публикация в App Store и Google Play.
-- AI-агент — отвечает клиентам 24/7 в Telegram, Instagram и на сайте, принимает заказы, записывает, квалифицирует заявки, обучается на базе знаний бизнеса, интеграция с CRM:
-  * подписка для Telegram — $99 в месяц (мы создаём, ведём, обновляем, ежемесячный отчёт, отмена в любой момент);
-  * полный выкуп — $1490 разово (агент и код ваши; дальше вы сами платите только за AI-модель (API) и сервер по факту использования).
-Процесс: заявка → бесплатный разбор процессов → разработка в согласованный срок → запуск и сопровождение."""
+SYSTEM_PROMPT = """Ты — вежливый, тёплый менеджер по продажам AI Business UZ (Ташкент). Клиенты пишут в Telegram на @businessaiuz, ты отвечаешь от имени компании. Пиши как живой, доброжелательный человек в мессенджере. Себе имя не придумывай.
 
-SYSTEM_PROMPT = """Ты — менеджер по продажам AI Business UZ. Клиенты пишут в Telegram на @businessaiuz, ты отвечаешь от имени компании. Пиши как живой человек в мессенджере. Себе имя не придумывай.
+ЯЗЫК ОТВЕТА
+- Клиент пишет по-узбекски (латиницей ИЛИ кириллицей) — ты ВСЕГДА пишешь по-узбекски ЛАТИНИЦЕЙ, грамотным литературным узбекским (o', g', sh, ch, апостроф: ma'lumot, qo'ng'iroq). В кириллицу программа переведёт сама.
+- Клиент пишет по-русски — отвечай по-русски.
+- Не вставляй русские слова в узбекский текст («дорого», «короче», «скидка»), пиши chegirma, bo'lib to'lash, buyurtma. Термины можно: CRM, ERP, AI, 1C, Telegram, Instagram, Excel, iOS, Android, sayt, landing.
+- Язык клиента подсказывает система перед ответом. Слушайся её. Если клиент сам попросил другой язык — переходи на него.
 
-КАК ПИСАТЬ
-- Каждое сообщение короткое: 3-15 слов, максимум 2 коротких предложения. Как пишут люди в Telegram.
-- Ответ = 1-2 отдельных сообщения (массив messages). Первый ответ в диалоге — ровно 3 (см. ниже).
-- В ответе максимум ОДИН вопрос, и он в последнем сообщении.
-- Без списков, «✅», markdown, рекламных оборотов. Эмодзи — не больше одного, лучше без.
-- Нельзя: «Albatta!», «Juda yaxshi savol», «Qisqa qilib», «Отличный вопрос», «Конечно!», «Рад помочь», «Я понимаю».
-- Можно: «Tushundim», «Zo'r», «Xo'p», «Ha, bor», «Тушундим», «Зўр», «Хўп», «Понял», «Да, есть», «Хорошо».
-- Пиши ОДНИМ алфавитом во всём ответе. Нельзя смешивать латиницу и кириллицу в узбекском тексте (кроме названий CRM, ERP, AI, 1C, Telegram, Instagram, Excel, iOS, Android).
-
-ПАМЯТЬ
-- Тебе дают историю переписки и карточку «ЧТО УЖЕ ИЗВЕСТНО». Это всё правда. Никогда не переспрашивай то, что уже известно (бизнес, чем пользуется, что нужно).
-- Не повторяй свои прошлые фразы и вопросы. Каждый ответ двигает разговор дальше.
-- Если клиент снова нажал кнопку на сайте с другой услугой — не здоровайся заново; учти, что ты уже знаешь, и свяжи новую услугу с его бизнесом.
-
-ЛОГИКА ПРОДАЖИ
-1. Сначала узнай клиента — по одному вопросу: (а) бизнес; (б) что болит / чего хочет; (в) чем пользуется сейчас; (г) при необходимости объём, сроки. Пока это неизвестно — о продукте коротко, 1 фразой.
-2. Прямой вопрос о цене — назови стартовую цену из базы и задай уточняющий вопрос.
-3. Когда потребность понятна — предложи ОДНО решение и одну выгоду его же словами.
-4. Возражения: «дорого» → вариант дешевле из базы (AI-агент $99/мес вместо выкупа, лендинг вместо большого сайта) и что точную сумму менеджер подберёт под бюджет; «подумаю» → спроси, что смущает; «не доверяю» → 22+ клиента, поддержка 24/7, и что он сейчас переписывается с таким же ИИ-агентом; «уже есть система» → что в ней не устраивает.
-5. Цель — бесплатная консультация: попроси номер телефона и удобное время звонка. Получил номер — коротко поблагодари, скажи что менеджер позвонит.
-6. Отказ / «не пишите» — вежливо попрощайся, action="stop".
-7. Просит живого человека, жалуется, сложный технический вопрос — скажи что подключишь менеджера, action="handoff".
-8. Посторонние вопросы — отвечай естественно в 1 фразе. «Ты бот?» — честно: ИИ-помощник компании, можешь подключить менеджера.
-
-ЗАПРЕТЫ
-- Только факты и цены из БАЗЫ. Никаких выдуманных цифр: диапазонов цен, стоимости сервера/API, «в 10 раз», процентов, сроков в днях/неделях (кроме «лендинг — обычно несколько дней»), скидок, акций, рассрочки, гарантий, кейсов. Не знаешь — «это точно посчитает менеджер на консультации».
+ТОН
+- Всегда «Siz» / «Вы». Тепло и уважительно: «Rahmat», «Iltimos», «Bemalol», «Спасибо», «Пожалуйста».
+- Никакого сарказма и подковырок («Дорого, вы это имеете в виду?»), сухих ответов в одно слово, споров с грубым клиентом, критики конкурентов. Не понял клиент — извинись («Uzr, soddaroq aytaman») и объясни проще.
 - Не дави, не создавай ложную срочность.
 
-ФОРМАТ — только один JSON-объект, без текста вокруг:
-{"messages": ["...", "..."], "readiness": 0, "stage": "greeting|discovery|offer|objection|closing|lead|lost", "action": "none|lead|stop|handoff", "name": "", "phone": "", "business": "", "need": "", "current_tool": "", "offer": "", "objection": "", "note": ""}
-- readiness (0-100) — готовность купить: 0-20 интересуется; 30-50 рассказал бизнес и боль; 60-75 обсуждает конкретную услугу/цену/сроки, спрашивает «как начать», согласен на консультацию; 80-100 дал телефон / готов платить / просит договор.
-- action="lead" — дал телефон или явно согласился на звонок/покупку.
-- name, phone, business, need, current_tool, offer, objection — заполняй, когда узнал/изменилось (иначе ""). offer — что ты предложил.
-- note — 1 короткая фраза на русском: что сейчас происходит в диалоге (для менеджера).
+КАК ПИСАТЬ
+- Каждое сообщение короткое: 4–16 слов, максимум 2 предложения.
+- Ответ = 1–2 отдельных сообщения (массив messages). Первый ответ в диалоге — 3 сообщения.
+- В ответе максимум ОДИН вопрос, в последнем сообщении.
+- Без списков, «✅», markdown, рекламных штампов. Эмодзи — максимум один.
+- ВСЕГДА отвечай на то, что клиент спросил/попросил. Несколько сообщений подряд — ответь на все вместе одним ответом.
 
-ПРИМЕРЫ (стиль)
-Клиент (первое сообщение): «Salom! Menga «CRM tizim» ($990 dan) qiziq. Batafsil ma'lumot bera olasizmi?»
-messages: ["Assalomu alaykum!", "Ishlaringiz yaxshimi?", "CRM qaysi biznesingiz uchun kerak?"]
-Клиент: «макарон бизнеси» → ["Тушундим, макарон ишлаб чиқарасизми ёки сотасизми?"]
-Клиент: «блакнот ишлатамиз» (бизнес уже известен) → ["Хўп, демак ҳамма мижоз дафтарда.", "Энг кўп қаерда қийналасиз — буюртмаларни йўқотишдами ёки қарзларни кузатишдами?"]
-Клиент: «1c» → ["Tushundim, 1C bor.", "1C'da nima yetishmayapti — mijozlar bilan ishlashmi?"]
-Клиент: «Сколько стоит бот?» (первое сообщение) → ["Здравствуйте!", "Как ваши дела?", "Бот для какого бизнеса нужен?"]
-Клиент: «дорого» → ["Понимаю. Можно начать с ИИ-агента по подписке — $99 в месяц.", "Попробуем на нём?"]
-Клиент: «ты бот?» → ["Да, я ИИ-помощник AI Business 🙂", "Если удобнее — подключу живого менеджера."]
-Клиент: «+998901234567» → ["Rahmat! Menejerimiz tez orada qo'ng'iroq qiladi.", "Qaysi vaqt qulay?"]
+ПЕРВЫЙ ОТВЕТ (ты ещё ничего не писал) — 3 сообщения:
+1) «Assalomu alaykum!» / «Здравствуйте!»; 2) «Ishlaringiz yaxshimi?» / «Как ваши дела?»; 3) лёгкое уточнение его вопроса (не весь ответ).
+Дальше не здоровайся и не спрашивай про дела.
+
+ПАМЯТЬ
+- Тебе дают историю и карточку «ЧТО УЖЕ ИЗВЕСТНО». Не переспрашивай известное, не повторяй свои прошлые фразы.
+- Повторное сообщение с кнопки сайта — продолжение разговора: не здоровайся, свяжи новую услугу с его бизнесом.
+
+ЛОГИКА ПРОДАЖИ
+1. Сначала узнай клиента, по одному вопросу: бизнес → что болит / чего хочет → чем пользуется сейчас → при необходимости объём, бюджет. Пока это неизвестно — о продукте 1 фразой.
+2. Прямой вопрос о цене — стартовая цена из базы + один уточняющий вопрос.
+3. Потребность понятна — ОДНО решение и одна выгода его же словами.
+4. «Дорого» → вариант дешевле из базы и что менеджер подберёт под бюджет; спроси ориентир бюджета. «Подумаю» → мягко спроси, что смущает. «Не доверяю» → 22+ компаний, поддержка 24/7, примеры на businessai.uz. «Уже есть система» → что в ней не устраивает.
+5. Портфолио / примеры работ → «примеры на businessai.uz, менеджер покажет похожие проекты на звонке».
+6. Скидка, рассрочка, точные сроки, стоимость сервера, договор, оплата → «это решает/считает менеджер на консультации» + предложи звонок.
+7. Цель — бесплатная консультация: номер телефона и удобное время. Если номер и время уже даны — НЕ переспрашивай: «Rahmat! Menejerimiz bugun qo'ng'iroq qiladi.»
+8. Отказ / «не пишите» — вежливо попрощайся, action="stop".
+9. Просит живого человека, жалуется, сложный технический вопрос — «подключаю менеджера», action="handoff".
+10. Посторонние вопросы и шутки — естественно, 1 фразой, с улыбкой. «Ты бот?» — честно: ИИ-помощник компании, можешь подключить менеджера.
+
+ЗАПРЕТЫ
+- Только факты и цены из БАЗЫ. Никаких выдуманных цифр: диапазонов цен, стоимости сервера/API, «в 10 раз», процентов, сроков в днях (кроме «лендинг — обычно несколько дней»), скидок, акций, рассрочки, гарантий, кейсов. Числа клиента (бюджет, время звонка, кол-во сотрудников) повторять можно.
+
+ФОРМАТ — только один JSON-объект:
+{"messages": ["...", "..."], "readiness": 0, "stage": "greeting|discovery|offer|objection|closing|lead|lost", "action": "none|lead|stop|handoff", "name": "", "phone": "", "business": "", "need": "", "current_tool": "", "budget": "", "offer": "", "objection": "", "call_time": "", "note": ""}
+- readiness 0–100: 0–20 интересуется; 30–50 рассказал бизнес и боль; 60–75 обсуждает услугу/цену/бюджет, согласен на консультацию; 80–100 дал телефон / готов платить.
+- action="lead" — дал телефон или явно согласился на звонок/покупку.
+- Поля заполняй, когда узнал (иначе ""). note — 1 фраза на русском для менеджера.
+
+ПРИМЕРЫ (клиент → messages; узбекский — латиницей)
+«Salom! Menga «Sayt» ($290 dan) qiziq. Batafsil ma'lumot bera olasizmi?» (первое) → ["Assalomu alaykum!", "Ishlaringiz yaxshimi?", "Sayt qaysi biznesingiz uchun kerak?"]
+«Сколько стоит бот?» (первое) → ["Здравствуйте!", "Как ваши дела?", "Бот для какого бизнеса нужен?"]
+«Ресторан сохасида» → ["Zo'r, restoran uchun sayt juda foydali.", "Sayt ko'proq menyu uchunmi yoki buyurtma olish uchunmi?"]
+«Сотувни ошириш учун» → ["Tushunarli, unda buyurtma tugmasi bor landing yaxshi mos keladi."]
+«Нима у» → ["Uzr, soddaroq aytaman: landing — bitta sahifali sayt, menyu va buyurtma tugmasi bilan."]
+«Неч пул ози у» → ["Landing $290 dan boshlanadi.", "Sizga shu variant mos keladimi?"]
+«Толик бовурсин лекн сал кмматро экан» → ["Tushunaman. Menejer budjetingizga mos variantni tanlab beradi.", "Taxminan qancha budjet ko'zlayapsiz?"]
+«Йо 400$ атрофида молжалим» → ["Rahmat, $400 budjetni menejerga yetkazaman.", "Telefon raqamingizni qoldirsangiz, u mos variantni aytib beradi."]
+«938900202» + «Бугун» → ["Rahmat! Menejerimiz bugun qo'ng'iroq qiladi."]
+«Килган ишиларни ташлаб беринглар» → ["Albatta, ishlarimiz businessai.uz saytida bor.", "Menejer qo'ng'iroqda restoranlar uchun qilingan saytlarni ham ko'rsatadi."]
+«бот мисан?» → ["Ha, men kompaniyaning AI yordamchisiman 🙂", "Xohlasangiz, menejerni ulab beraman."]
+«булиб тулаш борми» → ["Bo'lib to'lashni menejer hal qiladi.", "U sizga qo'ng'iroq qilib, batafsil aytib bersinmi?"]
+«уйлаб курай» → ["Albatta, bemalol o'ylab ko'ring.", "Sizni ko'proq nima o'ylantiryapti — narxmi yoki boshqa narsa?"]
+«керакмас бошка ёзманг» → ["Tushunarli, boshqa bezovta qilmaymiz. Ishlaringizga omad!"] (action=stop)
+«дорого» → ["Понимаю. Можно начать с ИИ-агента по подписке — $99 в месяц.", "Рассмотрим такой вариант?"]
+«покажите кейсы» → ["Примеры есть на businessai.uz, менеджер покажет похожие проекты на звонке."]
+«server qancha oyiga» → ["Bu foydalanishga bog'liq, aniq hisobni menejer konsultatsiyada qiladi."]
+«можно на русском?» → ["Конечно, продолжим по-русски."]
 
 БАЗА
-""" + KNOWLEDGE
+AI Business UZ (businessai.uz), Ташкент. IT и AI-решения для бизнеса. 22+ компаний работают с нами: заводы, клиники, учебные центры и др. Примеры работ и клиенты — на сайте businessai.uz.
+Контакты: Telegram @businessaiuz, телефон +998 93 890 02 02. Консультация бесплатно. На каждую услугу — техподдержка 24/7.
+Стартовые цены (точная сумма — на консультации):
+- Сайты: лендинг (одна страница) — от $290, обычно готов за несколько дней; сайт средней сложности (несколько страниц) — от $590; корпоративный сложный — от $1090. Анимированный дизайн, быстрые, под телефон, нацелены на заявки.
+- CRM — от $990: с нуля под процесс продаж; база клиентов и сделок, воронка, задачи, интеграция с Telegram и AI, без платы за пользователей. Можно связать с 1C (детали — на консультации).
+- ERP — от $1990: склад, финансы, производство, сотрудники, отчёты в реальном времени.
+- Мобильное приложение iOS + Android — от $4490: дизайн, backend и админка, публикация в App Store и Google Play.
+- AI-агент (отвечает клиентам 24/7 в Telegram, Instagram и на сайте, принимает заказы, записывает, квалифицирует заявки, учится на базе знаний бизнеса, интеграция с CRM): подписка для Telegram — $99 в месяц (создаём, ведём, обновляем, отчёт каждый месяц, отмена в любой момент); полный выкуп — $1490 разово (агент и код ваши, дальше платите только за AI-модель и сервер по факту).
+Процесс: заявка → бесплатный разбор → разработка в согласованный срок → запуск и сопровождение."""
 
 FOLLOWUP_INSTR = """Клиент не ответил на твоё последнее сообщение. Это напоминание {n} из {total}.
-Напиши ОДНО очень короткое сообщение (до 12 слов) на языке и алфавите клиента, как живой менеджер.
+Напиши ОДНО очень короткое, тёплое сообщение (до 12 слов), как живой менеджер. Узбекский — латиницей.
 {stage}
 Нельзя повторять уже заданные вопросы и прошлые формулировки. Нельзя выдумывать факты, цифры, скидки.
 Ответ — только текст сообщения, без кавычек и пояснений."""
@@ -224,6 +248,17 @@ def load_state():
         print("State load error:", e)
 
 
+def save_file():
+    with LOCK:
+        try:
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(STATE, f, ensure_ascii=False)
+            os.replace(tmp, STATE_FILE)
+        except Exception as e:
+            print("State save error:", e)
+
+
 def save_chat(key):
     with LOCK:
         c = STATE["chats"].get(key)
@@ -238,29 +273,17 @@ def save_owner(bc_id):
             save_file()
 
 
-def save_file():
-    with LOCK:
-        try:
-            tmp = STATE_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(STATE, f, ensure_ascii=False)
-            os.replace(tmp, STATE_FILE)
-        except Exception as e:
-            print("State save error:", e)
-
-
 def chat_state(key):
     with LOCK:
         c = STATE["chats"].get(key)
         if c is None:
             c = {"history": [], "last_client": 0, "followups": 0, "status": "active", "paused_until": 0,
                  "bc_id": None, "chat_id": None, "name": "", "username": "", "facts": {},
-                 "readiness": 0, "hot_sent": False, "lead_sent": False, "script": ""}
+                 "readiness": 0, "hot_sent": False, "lead_sent": False, "script": "", "lang_pref": ""}
             STATE["chats"][key] = c
-        c.setdefault("facts", {})
-        c.setdefault("readiness", 0)
-        c.setdefault("hot_sent", False)
-        c.setdefault("script", "")
+        for k, v in (("facts", {}), ("readiness", 0), ("hot_sent", False), ("lead_sent", False),
+                     ("script", ""), ("lang_pref", ""), ("username", "")):
+            c.setdefault(k, v)
         return c
 
 
@@ -301,7 +324,6 @@ def typing(chat_id, bc_id=None):
 
 
 def send_human(chat_id, parts, bc_id=None):
-    """Odamdek: har bir xabardan oldin 'yozmoqda...' va pauza"""
     for p in parts:
         if TYPING_DELAY:
             typing(chat_id, bc_id)
@@ -309,39 +331,61 @@ def send_human(chat_id, parts, bc_id=None):
         send_msg(chat_id, p, bc_id)
 
 
-def claude(system, messages, max_tokens=500, model=None):
-    body = json.dumps({
-        "model": model or CLAUDE_MODEL,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": messages,
-    }).encode()
-    for attempt in range(3):
-        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("x-api-key", ANTHROPIC_KEY)
-        req.add_header("anthropic-version", "2023-06-01")
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                res = json.loads(r.read())
-                return "".join(b.get("text", "") for b in res.get("content", []) if b.get("type") == "text").strip()
-        except Exception as e:
-            print("Claude error:", e)
-            time.sleep(2 * (attempt + 1))
+WORKING_MODEL = {"name": None}
+
+
+def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
+    """system: matn. cache_prefix: o'zgarmas uzun qism (prompt caching uchun)"""
+    if cache_prefix:
+        sys_blocks = [{"type": "text", "text": cache_prefix, "cache_control": {"type": "ephemeral"}},
+                      {"type": "text", "text": system}]
+    else:
+        sys_blocks = system
+    models = [model] if model else ([WORKING_MODEL["name"]] if WORKING_MODEL["name"] else []) + \
+        [m for m in MODELS if m != WORKING_MODEL["name"]]
+    for m in models:
+        body = json.dumps({"model": m, "max_tokens": max_tokens, "system": sys_blocks, "messages": messages}).encode()
+        for attempt in range(3):
+            req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("x-api-key", ANTHROPIC_KEY)
+            req.add_header("anthropic-version", "2023-06-01")
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    res = json.loads(r.read())
+                    if not model:
+                        WORKING_MODEL["name"] = m
+                    return "".join(b.get("text", "") for b in res.get("content", []) if b.get("type") == "text").strip()
+            except urllib.error.HTTPError as e:
+                detail = ""
+                try:
+                    detail = e.read().decode()[:300]
+                except Exception:
+                    pass
+                print("Claude HTTP error:", m, e.code, detail)
+                if e.code in (400, 403, 404) and ("model" in detail.lower() or e.code == 404):
+                    break           # bu model yo'q — keyingisiga
+                time.sleep(2 * (attempt + 1))
+            except Exception as e:
+                print("Claude error:", m, e)
+                time.sleep(2 * (attempt + 1))
     return ""
 
 
 def detect_business(text):
     biz_list = "\n".join([f"{b[1]} = {b[0]}" for b in BUSINESSES])
     prompt = f'Foydalanuvchi: "{text}"\nBiznes kodini toping:\n{biz_list}\nFaqat kod yozing.'
-    code = claude("", [{"role": "user", "content": prompt}], max_tokens=20, model=DETECT_MODEL).lower()
+    code = claude("Faqat kod yoz.", [{"role": "user", "content": prompt}], max_tokens=20, model=DETECT_MODEL).lower()
     valid = [b[1] for b in BUSINESSES]
     return code if code in valid else None
 
 
 def is_from_site(text):
-    """Saytdagi demo tugmasidan kelgan xabar"""
     return "uchun AI agent demosini ko'rishni xohlayman" in text
+
+
+def is_site_button(text):
+    return "Menga «" in text and "qiziq" in text or is_from_site(text)
 
 
 def build_messages(history):
@@ -357,60 +401,166 @@ def build_messages(history):
     return msgs
 
 # ==========================================================================
-# Til / alifbo
+# Til aniqlash (1000 dialogda sinalgan)
 # ==========================================================================
-KEEP_LATIN = {"crm", "erp", "ai", "api", "1c", "1с", "telegram", "instagram", "excel", "ios", "android", "app", "store",
-              "google", "play", "whatsapp", "businessai", "uz", "it", "sms", "pdf", "online", "ok"}
-UZ_CYR_LETTERS = set("ўқғҳЎҚҒҲ")
-UZ_CYR_WORDS = re.compile(r"(?i)(?<![а-яёўқғҳ])(борми|йўқ|йук|керак|қанча|канча|нархи|салом|ассалому|рахмат|раҳмат|бизнес[иа]м?|қилиш|қилса|бўлади|булади|мумкинми|иложи|сизлар|сизларда|менга|нима|қандай|кандай|канака|бор|ха|хоп|хўп|яхши|кечирасиз|ишлатамиз|ишлаб|сотамиз|керакми|йўқми|қиламиз|биз|бизда|бизни|учун|билан|ҳам|хам|эмас|лекин|ва|ёки)(?![а-яёўқғҳ])")
-UZ_SUFFIX = re.compile(r"(ми|лар|ларни|ларга|ларда|миз|сиз|ган|моқчи|мокчи|япти|ябди|ади|ини|нинг|дан|чи|имиз|ингиз|амиз|аймиз)$")
-RU_SUFFIX = re.compile(r"(ость|ться|тся|ешь|ете|ого|ому|ыми|ией|ание|ение|ый|ий|ая|ое|ые|ует|ают|ить|ать)$")
-RU_WORDS = re.compile(r"(?i)(?<![а-яё])(сколько|стоит|можно|нужно|нужен|нужна|здравствуйте|привет|спасибо|хочу|какой|какая|есть|цена|это|как|что|мне|у нас|мы|не|да|нет|для|или|вы|вас|пожалуйста)(?![а-яё])")
+KEEP_LATIN = {"crm", "erp", "ai", "api", "1c", "telegram", "instagram", "excel", "ios", "android", "app", "store",
+              "google", "play", "whatsapp", "businessai", "uz", "it", "sms", "pdf", "online", "ok", "okay", "landing",
+              "click", "payme", "faq", "nda", "ielts", "seo", "smm"}
+UZ_LETTERS = set("ўқғҳЎҚҒҲ")
+RU_LETTERS = set("ыщЫЩ")
+RU_WORDS = set("""и в во на не что как это для мне нам вы я мы есть нет да можно нужно надо сколько стоит пожалуйста
+здравствуйте спасибо хочу а но по за с со к о об от до из же ли бы уже ещё еще тоже просто очень когда где сейчас
+какой какая какие каких цена цену после перезвоните перезвоню позвоните звоните коротко доставка подробнее расскажите
+его её ее их меня вас вам нас наш наша ваш ваша мой моя только если чтобы так тут там вот всё все весь будет было был
+была могу можете хотим хотел хотела давайте пока потом сегодня завтра дорого дешевле нужен нужна нужны интересно
+понятно ясно хорошо ладно привет добрый день вечер утро спс нормально подумаю посмотрим работаете делаете сделать
+сделаете разве почему зачем кто чем при через без про также лучше ничего никак кроме вообще почти около примерно какое
+каком ну жду ждём ждем звонка звонок здрасте здравствуй алло давай удачи ага супер отлично понял поняла поняли прайс
+человека человек дайте одежда логистика аптека опт брони рассрочка рассрочку бесплатно поддержка других магазина
+магазин салона главврачу передам заявки разработка будет буду будем""".split())
+UZ_WORDS = set("""нима нега қанча канча қанақа канака қандай кандай борми бор йўқ йук йок керак керакмас керакми мумкин
+мумкинми иложи иложиси хоп хўп ха ҳа майли яхши раҳмат рахмат салом ассалому алайкум ваалайкум сиз сизлар сизга сизда
+сизни биз бизда бизга бизни биздан мен менга менда мени менинг улар шу шунақа шунака бу ўша уша қачон качон қаерда
+каерда неч нечта неччи пул сўм сум минг ойига ойлик кун ҳафта хафта бугун эртага кейин кейинрок ҳозир хозир аввал
+лекин лекн аммо ва ёки ҳам хам эмас эди экан экани эканми учун билан қилиш килиш қилсак килсак қилиб килиб бўлади
+булади бўлса булса бўлиб булиб ишлаймиз ишлатамиз ишлатаман сотамиз сотаман дўкон дукон ака опа ука жуда кўп куп оз
+озгина сал зўр зур тушунмадим тушундим тушунарли тушунарсиз ёзаман ёзинг ёзиб беринг беринглар бериш олиш оламиз
+оламан ташлаб кўрсатинг курсатинг кўриш куриш гаплашамиз гаплашайлик қўнғироқ конгирок кунгирок рақам ракам холос
+ҳолос хеч ҳеч ҳамма хамма ҳаммаси хаммаси кимга ким нарса нарх нархи нархлар арзон қиммат киммат кимматку ишонмайман
+ишонаман ишламайди ишлайди тўғри тугри нотўғри бир икки уч эса деди дедим айтинг айтдим айтаман неча нечи килинг
+қилинг оркали орқали асосан телим хисоби ҳисоби ми мисиз уйлаб ўйлаб курай кўрай натижа узим ўзим ёзилиш маркази
+марказ укув ўқув савдо махфий мисан ассалом кечкурун кечқурун та тагача ойда йилига кишим одам ходим ходимлар мижоз
+мижозлар буюртма буюртмалар хисоб ҳисоб харажат тушади тушасиз бизнеси бизнесим бизнесимиз соҳа соха соҳасида
+сохасида ошириш учун ишлаб чиқариш чикариш блакнот дафтар ишлатамиз молжалим мўлжал атрофида толик тўлиқ""".split())
+NEUTRAL = set("""ок окей ok скидка скидку скидки сайт сайтга сайтни телефон тел номер номерим телеграм телеграмм телега
+инстаграм эксель excel вой вооой воой клиент клиентлар реально короче норм хмм ммм ааа ресторан кафе клиника автосалон
+автосервис бот срм ерп 1с блокнот меню кейтеринг конструктор интернет магазин у бронь бронни""".split())
+UZ_SUFFIX = re.compile(r"(ми|мизми|сизми|лар|ларни|ларга|ларда|лардан|ларнинг|миз|имиз|ингиз|сиз|ган|ганмиз|моқчи|мокчи|"
+                       r"япти|ябди|япман|япмиз|аман|аймиз|айман|йман|ади|адими|ини|нинг|дан|чи|чилик|лик|ликни|лари|ларини|"
+                       r"сила|сизла|асила|асизла|дами|даги|дик|дим|дингиз|мас|маймиз|майди|экан|сак|сангиз|ишимиз|ман|"
+                       r"мисан|санми|ларми|сизларми|сизлар|сизлардан|ларингиз|миканслар|миканлар|адиган|ганман|гани|моқда|мокда|"
+                       r"еси|оси|аси|иси|уси|сини|сига|сида|сидан|имиз|имни|имга|имда)$")
+UZ_STRONG_SUFFIX = re.compile(r"(ларми|сизларми|сизлар|моқчи|мокчи|япти|ябди|япман|ганмиз|адими|адиган|ингиз|миканслар|"
+                              r"ларингиз|сизми|мизми|дими|ганман)$")
+RU_SUFFIX = re.compile(r"(ость|ться|тся|ешь|ете|ого|его|ому|ему|ыми|ими|ией|ание|ение|ый|ий|ой|ая|яя|ое|ее|ые|ие|ует|"
+                       r"ают|ят|ит|ить|ать|ять|еть|уть|ов|ев|ами|ями|ах|ях|ировать|ически|ство|ская|ский|ское|ские|ность)$")
+ARTIFACT_RE = re.compile(r"https?://\S+|@\w+|\$?\d[\d\s\-$.,%:]*")
+WORD_RE = re.compile(r"[A-Za-zʻ'’\x60]+|" + CYR_CLASS + "+")
+GLUED_RE = re.compile(r"[A-Za-z0-9](" + CYR_CLASS + "{2,6})(?!" + CYR_CLASS + ")")
 
 
-def classify_script(text):
-    """'uz_cyr' | 'ru' | 'uz_lat' | '' (aniqlab bo'lmadi)"""
-    words = re.findall(r"[A-Za-zʻ'’\x60]+|[\u0400-\u04ff]+", text)
-    words = [w for w in words if w.lower().strip("'’\x60ʻ") not in KEEP_LATIN]
-    cyr = sum(len(w) for w in words if re.match(r"[\u0400-\u04ff]", w))
+ONE_C_RE = re.compile(r"(?i)\b1\s?[сc]\s?(да|дан|га|ни|нинг|da|dan|ga|ni)?\b")
+
+
+def lang_evidence(text):
+    uz_bonus = 1.5 if re.search(r"(?i)\b1\s?[сc]\s?(да|дан|га|ни|нинг)\b", text) else 0.0
+    t = ARTIFACT_RE.sub(" ", ONE_C_RE.sub(" ", text))
+    words = [w for w in WORD_RE.findall(t) if w.lower().strip("'’\x60ʻ") not in KEEP_LATIN]
     lat = sum(len(w) for w in words if re.match(r"[A-Za-z]", w))
-    if cyr + lat < 3:
-        return ""
-    if cyr > lat:
-        low = text.lower()
-        cw = re.findall(r"[\u0400-\u04ff]+", low)
-        uz_score = len(UZ_CYR_WORDS.findall(low)) + sum(1 for w in cw if UZ_SUFFIX.search(w))
-        ru_score = len(RU_WORDS.findall(low)) + sum(1 for w in cw if RU_SUFFIX.search(w))
-        if any(ch in UZ_CYR_LETTERS for ch in text) or uz_score > ru_score:
-            return "uz_cyr"
+    cw = [w.lower() for w in words if re.match(CYR_CLASS, w)]
+    cyr = sum(len(w) for w in cw)
+    uz, ru = uz_bonus, 0.0
+    for w in cw:
+        if w in NEUTRAL:
+            continue
+        if any(ch in UZ_LETTERS for ch in w):
+            uz += 3
+        if any(ch in RU_LETTERS for ch in w):
+            ru += 2
+        if w in UZ_WORDS:
+            uz += 2
+        elif w in RU_WORDS:
+            ru += 2
+        else:
+            if len(w) >= 5 and UZ_STRONG_SUFFIX.search(w):
+                uz += 1.5
+            elif len(w) >= 3 and UZ_SUFFIX.search(w):
+                uz += 0.7
+            if len(w) >= 4 and RU_SUFFIX.search(w):
+                ru += 0.7
+    for g in GLUED_RE.findall(text):          # excelда, 7да, 990дан
+        uz += 1.5
+        if g.lower() in RU_WORDS:
+            ru -= 2
+    return {"lat": lat, "cyr": cyr, "uz": uz, "ru": ru}
+
+
+def classify_script(text, prev=None):
+    """'uz_cyr' | 'uz_lat' | 'ru' | '' — prev: shu suhbatdagi oldingi qaror"""
+    e = lang_evidence(text)
+    if e["lat"] + e["cyr"] < 2:
+        return prev or ""
+    if e["lat"] == 0 and e["uz"] == 0 and e["ru"] == 0:
+        return prev or "ru"
+    if e["lat"] > e["cyr"]:
+        return "uz_lat"
+    diff = e["uz"] - e["ru"]
+    if diff >= 0.7:
+        return "uz_cyr"
+    if diff <= -0.7:
         return "ru"
-    return "uz_lat"
+    if prev in ("uz_cyr", "uz_lat"):
+        return "uz_cyr"
+    if prev == "ru":
+        return "ru"
+    return "uz_cyr" if diff > 0 else "ru"
+
+
+LANG_REQ_RU = re.compile(r"(?i)((можно|давайте|пишите|пиши|лучше|говорите)\s*(на|по)[- ]?русск|на русском\s*(можно|пожалуйста|пиши)|"
+                         r"по[- ]?узбекски\s*(плохо|не)|не понимаю по[- ]?узбекски|ruscha\s*(yoz|gapir)|русча\s*(ёз|гапир)|"
+                         r"rus tilida\s*(yoz|gapir)|рус тилида\s*(ёз|гапир))")
+LANG_REQ_UZ = re.compile(r"(?i)((узбекча|ўзбекча|o'?zbekcha)\s*(ёз|yoz|гапир|gapir|ёзсам|yozsam|майли|mayli)|"
+                         r"(можно|давайте|пишите|пиши|лучше)\s*(на|по)[- ]?узбекск|"
+                         r"(узбек|ўзбек|o'?zbek) тилида\s*(ёз|гапир)|o'?zbek tilida\s*(yoz|gapir))")
 
 
 def client_script(c):
-    """Oxirgi aniq yozilgan mijoz xabari bo'yicha"""
-    for h in reversed(c["history"]):
-        if h["r"] == "u" and not h["t"].startswith("["):
-            s = classify_script(h["t"])
-            if s:
-                return s
-    return c.get("script") or "uz_lat"
+    """Javob yoziladigan til/alifbo: oxirgi aniq mijoz xabari + suhbat konteksti + mijoz iltimosi"""
+    prev = None
+    for h in c["history"]:
+        if h["r"] != "u" or h["t"].startswith("[") or is_site_button(h["t"]):
+            continue
+        s = classify_script(h["t"], prev)
+        if s:
+            prev = s
+        if LANG_REQ_RU.search(h["t"]):
+            c["lang_pref"] = "ru"
+        elif LANG_REQ_UZ.search(h["t"]):
+            c["lang_pref"] = "uz"
+    script = prev or c.get("script") or "uz_lat"
+    pref = c.get("lang_pref")
+    if pref == "ru":
+        return "ru"
+    if pref == "uz" and script == "ru":
+        return "uz_cyr"
+    return script
 
 
 SCRIPT_HINT = {
-    "uz_cyr": "АЛФАВИТ: клиент пишет по-узбекски КИРИЛЛИЦЕЙ. Весь ответ — по-узбекски кириллицей (ў, қ, ғ, ҳ). Ни одного узбекского слова латиницей.",
-    "uz_lat": "АЛФАВИТ: клиент пишет по-узбекски ЛАТИНИЦЕЙ. Весь ответ — по-узбекски латиницей (o', g', sh, ch). Ни одного слова кириллицей.",
-    "ru": "АЛФАВИТ: клиент пишет ПО-РУССКИ. Весь ответ — по-русски.",
+    "uz_cyr": "ЯЗЫК КЛИЕНТА: узбекский (пишет кириллицей). Отвечай по-узбекски ЛАТИНИЦЕЙ — программа сама переведёт в кириллицу.",
+    "uz_lat": "ЯЗЫК КЛИЕНТА: узбекский (латиница). Отвечай по-узбекски латиницей.",
+    "ru": "ЯЗЫК КЛИЕНТА: русский. Отвечай по-русски.",
 }
 
-L2C = [("o'", "ў"), ("g'", "ғ"), ("sh", "ш"), ("ch", "ч"), ("yo", "ё"), ("yu", "ю"), ("ya", "я"), ("ye", "е"), ("e", "е"),
-       ("a", "а"), ("b", "б"), ("d", "д"), ("f", "ф"), ("g", "г"), ("h", "ҳ"), ("i", "и"), ("j", "ж"), ("k", "к"),
-       ("l", "л"), ("m", "м"), ("n", "н"), ("o", "о"), ("p", "п"), ("q", "қ"), ("r", "р"), ("s", "с"), ("t", "т"),
-       ("u", "у"), ("v", "в"), ("x", "х"), ("y", "й"), ("z", "з"), ("c", "с"), ("w", "в"), ("'", "ъ")]
-C2L = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "ж": "j", "з": "z", "и": "i", "й": "y", "к": "k",
-       "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f",
-       "х": "x", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "'", "ы": "i", "ь": "", "э": "e", "ю": "yu",
-       "я": "ya", "ё": "yo", "ў": "o'", "қ": "q", "ғ": "g'", "ҳ": "h", "е": "e"}
+# ==========================================================================
+# Transliteratsiya (lotin -> kirill)
+# ==========================================================================
+TR_KEEP = KEEP_LATIN - {"ok", "okay", "landing", "telegram", "instagram", "excel", "whatsapp", "online"}
+TR_BRANDS = {"telegram": "Телеграм", "instagram": "Инстаграм", "excel": "Эксель", "whatsapp": "Ватсап", "online": "онлайн"}
+TR_EXC = {"budjet": "бюджет", "byudjet": "бюджет", "konsultatsiya": "консультация", "menejer": "менежер",
+          "aksiya": "акция", "chegirma": "чегирма", "sayt": "сайт", "landing": "лендинг", "obuna": "обуна",
+          "kompaniya": "компания", "integratsiya": "интеграция", "prezentatsiya": "презентация", "demo": "демо",
+          "server": "сервер", "dizayn": "дизайн", "admin": "админ", "backend": "бэкенд", "biznes": "бизнес",
+          "restoran": "ресторан", "variant": "вариант", "telefon": "телефон", "internet": "интернет"}
+L2C = [("ksiya", "кция"), ("tsiya", "ция"), ("yo'", "йў"), ("o'", "ў"), ("g'", "ғ"), ("sh", "ш"), ("ch", "ч"), ("yo", "ё"), ("yu", "ю"),
+       ("ya", "я"), ("ye", "е"), ("e", "е"), ("a", "а"), ("b", "б"), ("d", "д"), ("f", "ф"), ("g", "г"), ("h", "ҳ"),
+       ("i", "и"), ("j", "ж"), ("k", "к"), ("l", "л"), ("m", "м"), ("n", "н"), ("o", "о"), ("p", "п"), ("q", "қ"),
+       ("r", "р"), ("s", "с"), ("t", "т"), ("u", "у"), ("v", "в"), ("x", "х"), ("y", "й"), ("z", "з"), ("c", "к"),
+       ("w", "в"), ("'", "ъ")]
+C2L = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "ж": "j", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l",
+       "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "x", "ц": "ts",
+       "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "'", "ы": "i", "ь": "", "э": "e", "ю": "yu", "я": "ya", "ё": "yo",
+       "ў": "o'", "қ": "q", "ғ": "g'", "ҳ": "h", "е": "e"}
 
 
 def _case(src, dst):
@@ -423,15 +573,29 @@ def _case(src, dst):
 
 def lat2cyr_word(w):
     lw = w.lower().replace("ʻ", "'").replace("’", "'").replace("\x60", "'")
+    for b, cyr in TR_BRANDS.items():
+        if lw.startswith(b):
+            rest = lw[len(b):].lstrip("'")
+            out = cyr if w[:1].isupper() or b in ("telegram", "instagram", "whatsapp") else cyr.lower()
+            return out + (lat2cyr_word(rest) if rest else "")
+    for k, v in TR_EXC.items():
+        if lw == k or (len(k) >= 5 and lw.startswith(k)):
+            rest = lw[len(k):]
+            return _case(w, v + (lat2cyr_word(rest) if rest else ""))
     out, i = "", 0
     while i < len(lw):
         if i == 0 and lw[0] == "e":
-            out += "э"; i += 1; continue
+            out += "э"
+            i += 1
+            continue
         for a, b in L2C:
             if lw.startswith(a, i):
-                out += b; i += len(a); break
+                out += b
+                i += len(a)
+                break
         else:
-            out += lw[i]; i += 1
+            out += lw[i]
+            i += 1
     return _case(w, out)
 
 
@@ -446,43 +610,69 @@ def cyr2lat_word(w):
     return _case(w, out)
 
 
-def fix_script(text, script):
-    """Aralash alifboni tuzatish: uz_cyr da lotin so'zlarni kirillga, uz_lat da kirill so'zlarni lotinga"""
+LAT_WORD_RE = re.compile(r"(?<![@/\w.])[A-Za-z][A-Za-zʻ'’\x60]*(?![\w.]*\.(?:uz|com|ru)\b)")
+
+
+def to_cyr(text):
+    def rep(m):
+        w = m.group(0)
+        if w.lower().strip("'") in TR_KEEP or (w.isupper() and len(w) >= 2):
+            return w
+        return lat2cyr_word(w)
+    return LAT_WORD_RE.sub(rep, text)
+
+
+def to_lat(text):
+    return re.sub(CYR_CLASS + "+", lambda m: cyr2lat_word(m.group(0)), text)
+
+
+def render(text, script):
+    """Model matnini mijoz alifbosiga keltirish"""
     if script == "uz_cyr":
-        def rep(m):
-            w = m.group(0)
-            if w.lower().strip("'") in KEEP_LATIN or (w.isupper() and len(w) <= 5):
-                return w
-            return lat2cyr_word(w)
-        return re.sub(r"(?<![@/\w.])[A-Za-z][A-Za-zʻ'’\x60]*", rep, text)
+        return to_cyr(text)
     if script == "uz_lat":
-        return re.sub(r"[\u0400-\u04ff]+", lambda m: cyr2lat_word(m.group(0)), text)
+        return to_lat(text)
     return text
 
 # ==========================================================================
-# Javobni tekshirish (qo'riqchilar)
+# Qo'riqchilar
 # ==========================================================================
-JUNK_RE = re.compile(r"[\u2e80-\u9fff\uac00-\ud7af\u3040-\u30ff\uff00-\uffef\u0600-\u06ff]")
+JUNK_RE = re.compile("[" + chr(0x2E80) + "-" + chr(0x9FFF) + chr(0xAC00) + "-" + chr(0xD7AF) + chr(0x3040) + "-"
+                     + chr(0x30FF) + chr(0xFF00) + "-" + chr(0xFFEF) + chr(0x600) + "-" + chr(0x6FF) + "]")
 ALLOWED_NUMS = {"290", "590", "1090", "990", "1990", "4490", "99", "1490", "24", "7", "22", "998", "93", "890", "02", "1"}
-BANNED_PHRASES = re.compile(r"(?i)(albatta!|juda yaxshi savol|qisqa qilib|отличный вопрос|рад помочь|альбатта!)\s*")
+PHONE_RE = re.compile(r"(?:\+?998[\s\-]?)?\(?\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+TIME_RE = re.compile(r"\b\d{1,2}[:.]\d{2}\b|(?i:\b(?:soat|соат|в|с|до|после|к|от)\s*\d{1,2}\b)|"
+                     r"(?i:\b\d{1,2}\s*(?:da|dan|gacha|ga|да|дан|гача|га|ч|час|часа|часов|утра|вечера|дня)\b)")
 
 
 def clean_text(t):
     t = JUNK_RE.sub("", t)
     t = t.replace("**", "").replace("__", "").replace("##", "")
     t = re.sub(r"^\s*[-•✅]\s*", "", t, flags=re.M)
-    t = BANNED_PHRASES.sub("", t)
     t = re.sub(r"[ \t]{2,}", " ", t).strip()
     return t
 
 
-def bad_numbers(text, history):
-    allowed = set(ALLOWED_NUMS)
+def client_numbers(history):
+    nums = set()
     for h in history:
         if h["r"] == "u":
-            allowed.update(re.findall(r"\d+", h["t"]))
-    found = re.findall(r"\d+", re.sub(r"\+?998[\d\s\-()]{9,}", "", text))
-    return [n for n in found if n not in allowed]
+            t = h["t"]
+            nums.update(re.findall(r"\d+", t))
+            nums.update(x.replace(" ", "") for x in re.findall(r"\d{1,3}(?: \d{3})+", t))
+            for k in re.findall(r"(\d+)\s*(?:k|к|минг|ming|тыс\w*|тыщ\w*)", t, flags=re.I):
+                nums.add(str(int(k) * 1000))
+            for k in re.findall(r"(?:тыс\w*|тыщ\w*|минг|ming)\s*(\d+)", t, flags=re.I):
+                nums.add(str(int(k) * 1000))
+    return nums
+
+
+def bad_numbers(text, history):
+    allowed = ALLOWED_NUMS | client_numbers(history)
+    t = PHONE_RE.sub(" ", text)
+    t = re.sub(r"\b\d{1,2}[:.]\d{2}\b", " ", t)
+    t = TIME_RE.sub(" ", t)
+    return [n for n in re.findall(r"\d+", t) if n not in allowed]
 
 
 def norm(s):
@@ -490,11 +680,11 @@ def norm(s):
 
 
 def is_repeat(msg, history, thr=0.72):
-    m = norm(msg)
+    m = norm(to_lat(msg))
     if len(m) < 12:
         return False
     for h in history:
-        if h["r"] == "a" and difflib.SequenceMatcher(None, m, norm(h["t"])).ratio() >= thr:
+        if h["r"] == "a" and difflib.SequenceMatcher(None, m, norm(to_lat(h["t"]))).ratio() >= thr:
             return True
     return False
 
@@ -513,12 +703,15 @@ def drop_sentences_with(text, nums):
     return " ".join(keep).strip()
 
 
+FACT_LABELS = [("business", "Бизнес"), ("need", "Потребность"), ("current_tool", "Сейчас использует"),
+               ("budget", "Бюджет"), ("offer", "Ты уже предложил"), ("objection", "Возражение"),
+               ("name", "Имя"), ("phone", "Телефон"), ("call_time", "Удобное время звонка")]
+
+
 def facts_block(c):
     f = c.get("facts", {})
-    labels = [("business", "Бизнес"), ("need", "Потребность"), ("current_tool", "Сейчас использует"),
-              ("offer", "Ты уже предложил"), ("objection", "Возражение"), ("name", "Имя"), ("phone", "Телефон")]
-    lines = [f"- {lab}: {f[k]}" for k, lab in labels if f.get(k)]
-    asked = [h["t"] for h in c["history"] if h["r"] == "a" and "?" in h["t"]][-6:]
+    lines = [f"- {lab}: {f[k]}" for k, lab in FACT_LABELS if f.get(k)]
+    asked = [to_lat(h["t"]) for h in c["history"] if h["r"] == "a" and "?" in h["t"]][-6:]
     out = "ЧТО УЖЕ ИЗВЕСТНО О КЛИЕНТЕ (не переспрашивай):\n" + ("\n".join(lines) if lines else "- пока ничего")
     out += f"\n- Готовность: {c.get('readiness', 0)}%"
     if asked:
@@ -526,42 +719,56 @@ def facts_block(c):
     return out
 
 
+def model_history(c, script):
+    """Modelga tarix: bot xabarlari lotinda (model o'zi shunday yozgan)"""
+    hist = []
+    for h in c["history"]:
+        t = h["t"]
+        if h["r"] == "a" and script.startswith("uz"):
+            t = to_lat(t)
+        hist.append({"r": h["r"], "t": t})
+    return build_messages(hist)
+
+
 def generate_reply(c, script):
     first = not any(h["r"] == "a" for h in c["history"])
-    msgs = build_messages(c["history"])
+    msgs = model_history(c, script)
     if not msgs:
         return None
-    mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: ровно 3 сообщения — приветствие; вопрос как дела; лёгкое уточнение его вопроса."
+    mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: 3 сообщения — приветствие; как дела; лёгкое уточнение его вопроса."
             if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
-    system = SYSTEM_PROMPT + "\n\n" + SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode
+    dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode
     data, feedback, best = None, "", None
     for attempt in range(2):
-        convo = msgs if not feedback else msgs + [{"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
-                                                  {"role": "user", "content": "[СИСТЕМА] " + feedback}]
-        if convo[-1]["role"] == "assistant":
-            convo = convo[:-1]
-        raw = claude(system, convo, max_tokens=500)
+        convo = msgs if not feedback else msgs + [
+            {"role": "assistant", "content": json.dumps({"messages": data.get("_raw", [])}, ensure_ascii=False)},
+            {"role": "user", "content": "[СИСТЕМА] " + feedback}]
+        raw = claude(dyn, convo, max_tokens=500, cache_prefix=SYSTEM_PROMPT)
         if not raw:
             return None
         d = parse_json(raw)
         if d is None:
             d = {"messages": [p for p in re.split(r"\n\s*\n", raw) if p.strip()], "readiness": c.get("readiness", 0)}
-        out = [clean_text(fix_script(str(m), script)) for m in (d.get("messages") or []) if str(m).strip()]
-        out = [m for m in out if m]
+        raw_msgs = [clean_text(str(m)) for m in (d.get("messages") or []) if str(m).strip()]
+        raw_msgs = [m for m in raw_msgs if m]
+        d["_raw"] = raw_msgs
+        out = [render(m, script) for m in raw_msgs]
         d["messages"] = out
         problems = []
         nums = sorted({n for m in out for n in bad_numbers(m, c["history"])})
         if nums:
             problems.append("Убери выдуманные числа " + ", ".join(nums) + " — их нет в базе.")
-        reps = [m for m in out if is_repeat(m, c["history"])]
+        reps = [m for m in raw_msgs if is_repeat(m, c["history"])]
         if reps:
             problems.append("Ты повторяешь уже сказанное: «" + reps[0] + "». Скажи по-другому и двигай разговор дальше.")
         if sum(len(m) for m in out) > MAX_REPLY_CHARS or any(len(m) > MAX_MSG_CHARS for m in out):
-            problems.append("Слишком длинно. Каждое сообщение до 15 слов, всего 1-2 сообщения.")
+            problems.append("Слишком длинно. Каждое сообщение до 16 слов, всего 1-2 сообщения.")
         if sum(m.count("?") for m in out) > (2 if first else 1):
             problems.append("Только один вопрос в ответе.")
         if first and len(out) < 2:
             problems.append("Первый ответ — 3 коротких сообщения: приветствие, как дела, уточнение.")
+        if script.startswith("uz") and re.search(r"(?i)\b(дорого|короче|скидка|просто|конечно|хорошо)\b", " ".join(raw_msgs)):
+            problems.append("В узбекском ответе русские слова. Пиши только по-узбекски латиницей.")
         if best is None or len(problems) < best[0]:
             best = (len(problems), d)
         data = d
@@ -569,7 +776,6 @@ def generate_reply(c, script):
             break
         feedback = " ".join(problems) + " Верни исправленный JSON."
     data = best[1]
-    # oxirgi himoya
     out = data["messages"]
     nums = sorted({n for m in out for n in bad_numbers(m, c["history"])})
     if nums:
@@ -578,7 +784,6 @@ def generate_reply(c, script):
     out = out[:3] if first else out[:2]
     data["messages"] = out
     return data
-
 
 # ==========================================================================
 # Hisobotlar
@@ -596,14 +801,10 @@ def send_report(c, title):
     who = c.get("name") or "-"
     if c.get("username"):
         who += " (@" + c["username"] + ")"
-    lines = [title, "",
-             f"Клиент: {who}",
-             f"Ссылка: tg://user?id={c.get('chat_id')}",
+    lines = [title, "", f"Клиент: {who}", f"Ссылка: tg://user?id={c.get('chat_id')}",
              f"Готовность купить: {c.get('readiness', 0)}%"]
-    for k, lab in [("phone", "Телефон"), ("business", "Бизнес"), ("need", "Потребность"),
-                   ("current_tool", "Сейчас использует"), ("offer", "Что предложили"),
-                   ("objection", "Возражения"), ("note", "Как идёт диалог")]:
-        if f.get(k):
+    for k, lab in FACT_LABELS + [("note", "Как идёт диалог")]:
+        if k != "name" and f.get(k):
             lines.append(f"{lab}: {f[k]}")
     tail = c["history"][-10:]
     if tail:
@@ -631,7 +832,7 @@ def ai_reply(key):
             for m in out:
                 c["history"].append({"r": "a", "t": m, "ts": time.time()})
     with LOCK:
-        for k in ("name", "phone", "business", "need", "current_tool", "offer", "objection", "note"):
+        for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):
             v = str(d.get(k) or "").strip()
             if v:
                 c["facts"][k] = v[:200]
@@ -640,11 +841,16 @@ def ai_reply(key):
         except Exception:
             pass
     action = str(d.get("action") or "none")
-    has_phone = bool(c["facts"].get("phone")) or bool(re.search(r"\+?998[\d\s\-()]{9,}", " ".join(h["t"] for h in c["history"] if h["r"] == "u")))
+    client_text = " ".join(h["t"] for h in c["history"] if h["r"] == "u")
+    has_phone = bool(c["facts"].get("phone")) or bool(PHONE_RE.search(client_text))
     if (action == "lead" or has_phone) and not c.get("lead_sent"):
         c["lead_sent"] = True
         c["hot_sent"] = True
         c["status"] = "lead"
+        if not c["facts"].get("phone"):
+            m = PHONE_RE.search(client_text)
+            if m:
+                c["facts"]["phone"] = m.group(0)
         send_report(c, "🔥 ЛИД: клиент оставил контакт / согласился")
     elif c["readiness"] >= HOT_THRESHOLD and not c.get("hot_sent"):
         c["hot_sent"] = True
@@ -656,44 +862,58 @@ def ai_reply(key):
         send_report(c, "🙋 Клиент просит живого менеджера")
 
 
-def on_client_message(chat_id, text, bc_id, sender):
+def record_client(chat_id, text, bc_id, sender):
     key = f"{bc_id or 'direct'}:{chat_id}"
+    with LOCK:
+        c = chat_state(key)
+        c["chat_id"] = chat_id
+        c["bc_id"] = bc_id
+        nm = " ".join(x for x in [sender.get("first_name"), sender.get("last_name")] if x)
+        if nm:
+            c["name"] = nm
+        if sender.get("username"):
+            c["username"] = sender["username"]
+        stamp = time.time()
+        c["history"].append({"r": "u", "t": text, "ts": stamp})
+        c["history"] = c["history"][-MAX_HISTORY * 2:]
+        c["last_client"] = stamp
+        c["followups"] = 0
+        if c["status"] == "stopped":
+            c["status"] = "active"
+    return key, stamp
+
+
+def respond(key, stamp=None):
+    """DEBOUNCE: mijoz yana yozsa — kutamiz, keyin hammasiga bitta javob"""
+    if stamp is not None and DEBOUNCE_SEC > 0:
+        time.sleep(DEBOUNCE_SEC)
+        if chat_state(key)["last_client"] != stamp:
+            return
     with chat_lock(key):
         c = chat_state(key)
-        with LOCK:
-            c["chat_id"] = chat_id
-            c["bc_id"] = bc_id
-            nm = " ".join(x for x in [sender.get("first_name"), sender.get("last_name")] if x)
-            if nm:
-                c["name"] = nm
-            if sender.get("username"):
-                c["username"] = sender["username"]
-            c["history"].append({"r": "u", "t": text, "ts": time.time()})
-            c["history"] = c["history"][-MAX_HISTORY * 2:]
-            c["last_client"] = time.time()
-            c["followups"] = 0
-            if c["status"] == "stopped":
-                c["status"] = "active"
+        if stamp is not None and c["last_client"] != stamp:
+            return
         if c["paused_until"] > time.time():
             save_chat(key)
             return
-
-        if is_from_site(text) and not any(h["r"] == "a" for h in c["history"]):
-            biz_key = detect_business(text)
+        last = c["history"][-1]["t"] if c["history"] else ""
+        if is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
+            biz_key = detect_business(last)
             if biz_key:
                 biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
-                link = DEMO_URL + "?b=" + biz_key
-                demo = f"{biz_name} uchun AI agent demosi:\n\n{link}"
-                send_msg(chat_id, demo, bc_id)
+                demo = f"{biz_name} uchun AI agent demosi:\n\n{DEMO_URL}?b={biz_key}"
+                send_msg(c["chat_id"], demo, c["bc_id"])
                 with LOCK:
-                    c["history"].append({"r": "a", "t": demo, "ts": time.time()})
                     c["facts"].setdefault("business", biz_name)
-                save_chat(key)
-                return
-
+                    c["demo_sent"] = True
         if AI_REPLIES and c["status"] != "handoff":
             ai_reply(key)
         save_chat(key)
+
+
+def on_client_message(chat_id, text, bc_id, sender):
+    key, stamp = record_client(chat_id, text, bc_id, sender)
+    respond(key, stamp)
 
 
 def on_owner_message(chat_id, bc_id, text=""):
@@ -758,9 +978,8 @@ def send_followup(key):
         total = len(FOLLOWUP_MINUTES)
         stage = FOLLOWUP_STAGES[-1] if n >= total else FOLLOWUP_STAGES[min(n - 1, len(FOLLOWUP_STAGES) - 2)]
         script = client_script(c)
-        system = (SYSTEM_PROMPT + "\n\n" + SCRIPT_HINT[script] + "\n\n" + facts_block(c)
-                  + "\n\n" + FOLLOWUP_INSTR.format(n=n, total=total, stage=stage))
-        msgs = build_messages(c["history"])
+        dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + FOLLOWUP_INSTR.format(n=n, total=total, stage=stage)
+        msgs = model_history(c, script)
         msgs.append({"role": "user", "content": "[СИСТЕМА] Напиши напоминание."})
         merged = []
         for m in msgs:
@@ -770,11 +989,11 @@ def send_followup(key):
                 merged.append(m)
         text = ""
         for attempt in range(2):
-            raw = claude(system, merged, max_tokens=150)
+            raw = claude(dyn, merged, max_tokens=150, cache_prefix=SYSTEM_PROMPT)
             d = parse_json(raw) if raw.strip().startswith("{") else None
             if d and d.get("messages"):
                 raw = " ".join(str(x) for x in d["messages"])
-            t = clean_text(fix_script(raw.strip().strip('"«»'), script))
+            t = render(clean_text(raw.strip().strip('"«»')), script)
             if t and not bad_numbers(t, c["history"]) and not is_repeat(t, c["history"], 0.6) and len(t) <= MAX_MSG_CHARS:
                 text = t
                 break
@@ -834,7 +1053,9 @@ def handle(update):
                 text = "[клиент отправил файл/фото без подписи]"
             elif msg.get("contact"):
                 ct = msg["contact"]
-                text = f"Мой контакт: {ct.get('first_name', '')} {ct.get('phone_number', '')}"
+                text = f"{ct.get('first_name', '')} {ct.get('phone_number', '')}".strip()
+            elif msg.get("sticker"):
+                text = msg["sticker"].get("emoji") or "👍"
             else:
                 return
         on_client_message(chat_id, text, bc_id, sender)
@@ -889,6 +1110,7 @@ class Handler(BaseHTTPRequestHandler):
         info += f"can_connect_to_business: {me.get('result', {}).get('can_connect_to_business', False)}\n"
         with LOCK:
             info += f"chats: {len(STATE['chats'])}\nmemory: {'postgres' if DB is not None else 'file'}\n"
+        info += f"model: {WORKING_MODEL['name'] or MODELS[0]}\n"
         self.wfile.write(info.encode())
 
     def log_message(self, format, *args):
@@ -912,5 +1134,5 @@ if __name__ == "__main__":
         })
         print("Webhook:", result)
     threading.Thread(target=scheduler, daemon=True).start()
-    print("Bot running on port", port, "| memory:", "postgres" if DB is not None else "file")
+    print("Bot running on port", port, "| memory:", "postgres" if DB is not None else "file", "| models:", MODELS)
     ThreadingServer(("0.0.0.0", port), Handler).serve_forever()
