@@ -332,6 +332,7 @@ def send_human(chat_id, parts, bc_id=None):
 
 
 WORKING_MODEL = {"name": None}
+NO_THINKING = {}
 
 
 def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
@@ -344,17 +345,23 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
     models = [model] if model else ([WORKING_MODEL["name"]] if WORKING_MODEL["name"] else []) + \
         [m for m in MODELS if m != WORKING_MODEL["name"]]
     for m in models:
-        body = json.dumps({"model": m, "max_tokens": max_tokens, "system": sys_blocks, "messages": messages}).encode()
+        payload = {"model": m, "max_tokens": max(max_tokens, 1500), "system": sys_blocks, "messages": messages}
+        if NO_THINKING.get(m, True):
+            payload["thinking"] = {"type": "disabled"}
+        body = json.dumps(payload).encode()
         for attempt in range(3):
             req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST")
             req.add_header("Content-Type", "application/json")
             req.add_header("x-api-key", ANTHROPIC_KEY)
             req.add_header("anthropic-version", "2023-06-01")
             try:
-                with urllib.request.urlopen(req, timeout=60) as r:
+                with urllib.request.urlopen(req, timeout=90) as r:
                     res = json.loads(r.read())
                     if not model:
                         WORKING_MODEL["name"] = m
+                    if res.get("stop_reason") == "max_tokens":
+                        print("Claude: answer truncated (max_tokens)", m)
+                        return ""
                     return "".join(b.get("text", "") for b in res.get("content", []) if b.get("type") == "text").strip()
             except urllib.error.HTTPError as e:
                 detail = ""
@@ -363,6 +370,11 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
                 except Exception:
                     pass
                 print("Claude HTTP error:", m, e.code, detail)
+                if e.code == 400 and "thinking" in detail.lower() and "thinking" in payload:
+                    NO_THINKING[m] = False          # bu model "thinking" parametrini qabul qilmaydi
+                    payload.pop("thinking")
+                    body = json.dumps(payload).encode()
+                    continue
                 if e.code in (400, 403, 404) and ("model" in detail.lower() or e.code == 404):
                     break           # bu model yo'q — keyingisiga
                 time.sleep(2 * (attempt + 1))
@@ -690,11 +702,60 @@ def is_repeat(msg, history, thr=0.72):
 
 
 def parse_json(raw):
+    """Model javobidan JSON ni ishonchli ajratish (```json, ortiqcha matn, ichki qo'shtirnoqlar)"""
+    raw = re.sub(r"```(?:json)?", "", raw or "")
     try:
-        a, b = raw.index("{"), raw.rindex("}")
-        return json.loads(raw[a:b + 1])
-    except Exception:
+        a = raw.index("{")
+    except ValueError:
         return None
+    depth, instr, esc = 0, False, False
+    for i in range(a, len(raw)):          # birinchi to'liq {...} ni topish
+        ch = raw[i]
+        if instr:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
+        elif ch == '"':
+            instr = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(raw[a:i + 1])
+                except Exception:
+                    break
+    # oxirgi chora: "messages" massividagi satrlarni qo'lda ajratib olish
+    m = re.search(r'"messages"\s*:\s*\[(.*?)\]\s*(?:,|\}|$)', raw, flags=re.S)
+    if not m:
+        return None
+    items = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
+    if not items:
+        return None
+    d = {"messages": [_unq(x) for x in items]}
+    for k in ("readiness", "action", "stage"):
+        mm = re.search(r'"' + k + r'"\s*:\s*"?([\w.]+)', raw)
+        if mm:
+            d[k] = mm.group(1)
+    return d
+
+
+def _unq(x):
+    try:
+        return json.loads('"' + x + '"')
+    except Exception:
+        return x.replace('\\"', '"')
+
+
+SERVICE_TEXT_RE = re.compile(r'[{}\[\]]|"?(messages|readiness|stage|action)"?\s*:|мессагес|реадинесс')
+
+
+def looks_like_service_text(t):
+    return bool(SERVICE_TEXT_RE.search(t))
 
 
 def drop_sentences_with(text, nums):
@@ -748,9 +809,13 @@ def generate_reply(c, script):
             return None
         d = parse_json(raw)
         if d is None:
-            d = {"messages": [p for p in re.split(r"\n\s*\n", raw) if p.strip()], "readiness": c.get("readiness", 0)}
+            if "{" in raw or "messages" in raw:
+                print("Unparseable model output:", raw[:300])
+                d = {"messages": [], "readiness": c.get("readiness", 0)}
+            else:
+                d = {"messages": [p for p in re.split(r"\n\s*\n", raw) if p.strip()], "readiness": c.get("readiness", 0)}
         raw_msgs = [clean_text(str(m)) for m in (d.get("messages") or []) if str(m).strip()]
-        raw_msgs = [m for m in raw_msgs if m]
+        raw_msgs = [m for m in raw_msgs if m and not looks_like_service_text(m)]
         d["_raw"] = raw_msgs
         out = [render(m, script) for m in raw_msgs]
         d["messages"] = out
@@ -767,6 +832,8 @@ def generate_reply(c, script):
             problems.append("Только один вопрос в ответе.")
         if first and len(out) < 2:
             problems.append("Первый ответ — 3 коротких сообщения: приветствие, как дела, уточнение.")
+        if not out:
+            problems.append("Ответ не распознан. Верни строго один валидный JSON-объект без лишнего текста.")
         if script.startswith("uz") and re.search(r"(?i)\b(дорого|короче|скидка|просто|конечно|хорошо)\b", " ".join(raw_msgs)):
             problems.append("В узбекском ответе русские слова. Пиши только по-узбекски латиницей.")
         if best is None or len(problems) < best[0]:
@@ -780,7 +847,7 @@ def generate_reply(c, script):
     nums = sorted({n for m in out for n in bad_numbers(m, c["history"])})
     if nums:
         out = [drop_sentences_with(m, nums) for m in out]
-    out = [m for m in out if m and not is_repeat(m, c["history"], 0.9)]
+    out = [m for m in out if m and not is_repeat(m, c["history"], 0.9) and not looks_like_service_text(m)]
     out = out[:3] if first else out[:2]
     data["messages"] = out
     return data
@@ -822,11 +889,13 @@ def ai_reply(key):
     c["script"] = script
     if TYPING_DELAY:
         typing(c["chat_id"], c["bc_id"])
-    d = generate_reply(c, script)
-    if not d:
-        return
+    d = generate_reply(c, script) or {"messages": []}
     out = d.get("messages") or []
+    if not out and not c.get("error_reported"):
+        c["error_reported"] = True
+        send_report(c, "⚠️ Бот не смог сформулировать ответ — ответьте клиенту вручную")
     if out:
+        c["error_reported"] = False
         send_human(c["chat_id"], out, c["bc_id"])
         with LOCK:
             for m in out:
@@ -994,6 +1063,8 @@ def send_followup(key):
             if d and d.get("messages"):
                 raw = " ".join(str(x) for x in d["messages"])
             t = render(clean_text(raw.strip().strip('"«»')), script)
+            if looks_like_service_text(t):
+                t = ""
             if t and not bad_numbers(t, c["history"]) and not is_repeat(t, c["history"], 0.6) and len(t) <= MAX_MSG_CHARS:
                 text = t
                 break
