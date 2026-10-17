@@ -13,6 +13,7 @@ AI Business UZ — sotuvchi AI agent (Telegram Business), v5.
 """
 import os
 import re
+import sys
 import json
 import time
 import difflib
@@ -223,6 +224,17 @@ def db_put(k, v):
     return False
 
 
+def db_delete(k):
+    if DB is None:
+        return False
+    try:
+        DB.run("DELETE FROM demo_bot_state WHERE k = :k", k=k)
+        return True
+    except Exception as e:
+        print("DB delete error:", e)
+        return False
+
+
 def load_state():
     global STATE
     if db_connect() is not None:
@@ -233,6 +245,8 @@ def load_state():
                     STATE["chats"][k[5:]] = json.loads(v)
                 elif k.startswith("owner:"):
                     STATE["owners"][k[6:]] = json.loads(v)
+                elif k.startswith("tenant:"):
+                    STATE.setdefault("tenants", {})[k[7:]] = json.loads(v)
             print("Loaded chats from DB:", len(STATE["chats"]))
             return
         except Exception as e:
@@ -242,6 +256,7 @@ def load_state():
             STATE = json.load(f)
         STATE.setdefault("chats", {})
         STATE.setdefault("owners", {})
+        STATE.setdefault("tenants", {})
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -329,6 +344,14 @@ def send_human(chat_id, parts, bc_id=None):
             typing(chat_id, bc_id)
             time.sleep(min(0.8 + len(p) / 30.0, 5.0))
         send_msg(chat_id, p, bc_id)
+
+
+def deliver(c, parts):
+    """Kanalga qarab yuborish: Telegram yoki Instagram"""
+    if c.get("channel") == "ig":
+        IG.send_parts(c, parts)
+    else:
+        send_human(c["chat_id"], parts, c["bc_id"])
 
 
 WORKING_MODEL = {"name": None}
@@ -804,7 +827,7 @@ def generate_reply(c, script):
         convo = msgs if not feedback else msgs + [
             {"role": "assistant", "content": json.dumps({"messages": data.get("_raw", [])}, ensure_ascii=False)},
             {"role": "user", "content": "[СИСТЕМА] " + feedback}]
-        raw = claude(dyn, convo, max_tokens=500, cache_prefix=SYSTEM_PROMPT)
+        raw = claude(dyn, convo, max_tokens=500, cache_prefix=IG.prompt_for(c))
         if not raw:
             return None
         d = parse_json(raw)
@@ -856,7 +879,7 @@ def generate_reply(c, script):
 # Hisobotlar
 # ==========================================================================
 def report_target(c):
-    return REPORT_CHAT_ID or STATE["owners"].get(c.get("bc_id") or "", "")
+    return c.get("report_chat") or REPORT_CHAT_ID or STATE["owners"].get(c.get("bc_id") or "", "")
 
 
 def send_report(c, title):
@@ -887,7 +910,7 @@ def ai_reply(key):
     c = chat_state(key)
     script = client_script(c)
     c["script"] = script
-    if TYPING_DELAY:
+    if TYPING_DELAY and c.get("channel") != "ig":
         typing(c["chat_id"], c["bc_id"])
     d = generate_reply(c, script) or {"messages": []}
     out = d.get("messages") or []
@@ -896,7 +919,7 @@ def ai_reply(key):
         send_report(c, "⚠️ Бот не смог сформулировать ответ — ответьте клиенту вручную")
     if out:
         c["error_reported"] = False
-        send_human(c["chat_id"], out, c["bc_id"])
+        deliver(c, out)
         with LOCK:
             for m in out:
                 c["history"].append({"r": "a", "t": m, "ts": time.time()})
@@ -966,7 +989,7 @@ def respond(key, stamp=None):
             save_chat(key)
             return
         last = c["history"][-1]["t"] if c["history"] else ""
-        if is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
+        if c.get("channel") != "ig" and is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
             biz_key = detect_business(last)
             if biz_key:
                 biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
@@ -1058,7 +1081,7 @@ def send_followup(key):
                 merged.append(m)
         text = ""
         for attempt in range(2):
-            raw = claude(dyn, merged, max_tokens=150, cache_prefix=SYSTEM_PROMPT)
+            raw = claude(dyn, merged, max_tokens=150, cache_prefix=IG.prompt_for(c))
             d = parse_json(raw) if raw.strip().startswith("{") else None
             if d and d.get("messages"):
                 raw = " ".join(str(x) for x in d["messages"])
@@ -1071,16 +1094,20 @@ def send_followup(key):
         with LOCK:
             c["followups"] = n
         if text:
-            send_human(c["chat_id"], [text], c["bc_id"])
+            deliver(c, [text])
             with LOCK:
                 c["history"].append({"r": "a", "t": text, "ts": time.time(), "f": n})
         save_chat(key)
 
 
 def scheduler():
+    last_maint = 0
     while True:
         try:
             now = time.time()
+            if now - last_maint > 3600:
+                last_maint = now
+                IG.maintenance()
             with LOCK:
                 keys = [k for k, c in STATE["chats"].items() if due_followup(c, now)]
             for k in keys:
@@ -1140,12 +1167,21 @@ def handle(update):
         if text.startswith("/start"):
             send_msg(chat_id, "Bot ishlayapti! / Бот работает!\n\nSizning chat ID: " + str(chat_id))
             return
+        if text.startswith("/ig") and str(chat_id) == str(REPORT_CHAT_ID):
+            reply = IG.admin_command((msg.get("text") or "").strip())
+            if reply:
+                send_msg(chat_id, reply)
+            return
         if chat.get("type") == "private" and text:
             on_client_message(chat_id, text, None, msg.get("from", {}))
         return
 
     if "callback_query" in update:
         tg("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
+
+
+import ig as IG  # noqa: E402  (Instagram kanali)
+IG.init(sys.modules[__name__])
 
 
 class ThreadingServer(ThreadingMixIn, HTTPServer):
@@ -1156,6 +1192,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
+        if IG.handle_post(self, body):
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
@@ -1174,6 +1212,8 @@ class Handler(BaseHTTPRequestHandler):
             print("Error:", e)
 
     def do_GET(self):
+        if IG.handle_get(self):
+            return
         self.send_response(200)
         self.end_headers()
         me = tg("getMe", {})
@@ -1182,6 +1222,7 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             info += f"chats: {len(STATE['chats'])}\nmemory: {'postgres' if DB is not None else 'file'}\n"
         info += f"model: {WORKING_MODEL['name'] or MODELS[0]}\n"
+        info += f"instagram: {'configured' if IG.configured() else 'not configured'}, accounts: {len(STATE.get('tenants', {}))}\n"
         self.wfile.write(info.encode())
 
     def log_message(self, format, *args):
