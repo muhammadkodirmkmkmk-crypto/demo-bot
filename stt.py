@@ -107,6 +107,10 @@ TTS_VOICE_NAME = os.environ.get("ELEVENLABS_VOICE_NAME", "Bekzod").strip()  # ak
 DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"
 TTS_MODEL = os.environ.get("TTS_MODEL", "eleven_v3")          # o'zbek tili faqat v3 da
 TTS_FORMAT = os.environ.get("TTS_FORMAT", "mp3_44100_64")
+# Ovoz jonliligi: stability 0.0 — eng emotsional, 0.5 — tabiiy, 1.0 — bir xil
+TTS_STABILITY = float(os.environ.get("TTS_STABILITY", "0.5"))
+TTS_SIMILARITY = float(os.environ.get("TTS_SIMILARITY", "0.8"))
+_NO_SETTINGS = {}
 _VOICE_CACHE = {"id": None, "resolved": None}
 
 
@@ -181,6 +185,8 @@ def pcm_to_wav(pcm, rate=16000):
 
 def _tts_call(text, voice, model, lang, fmt=None):
     body = {"text": text, "model_id": model}   # til matndan avtomatik aniqlanadi (v3 "uz" kodini qabul qilmaydi)
+    if not _NO_SETTINGS.get(model):
+        body["voice_settings"] = {"stability": TTS_STABILITY, "similarity_boost": TTS_SIMILARITY}
     req = urllib.request.Request(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format={fmt or TTS_FORMAT}",
         data=json.dumps(body).encode(), method="POST",
@@ -194,6 +200,9 @@ def _tts_call(text, voice, model, lang, fmt=None):
         except Exception:
             detail = ""
         print("TTS error:", model, voice, e.code, detail)
+        if e.code in (400, 422) and "voice_settings" in body and ("stability" in detail or "voice_settings" in detail):
+            _NO_SETTINGS[model] = True          # bu model sozlamani qabul qilmaydi — sozlamasiz qayta
+            return _tts_call(text, voice, model, lang, fmt)
         return e.code, b""
     except Exception as e:
         print("TTS error:", e)

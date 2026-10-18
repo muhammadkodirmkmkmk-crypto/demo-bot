@@ -440,11 +440,15 @@ def client_used_voice(c):
     return bool(u) and u[-1]["t"].startswith(STT.VOICE_PREFIX)
 
 
-def deliver_voice(c, parts, script):
+def deliver_voice(c, parts, script, spoken=""):
     """Mijoz ovoz yuborgan bo'lsa — ovoz bilan javob. Bo'lmasa False (matn yuboriladi)"""
     if not STT.tts_enabled() or not parts:
         return False
-    text = " ".join(to_lat(p) if script.startswith("uz") else p for p in parts)
+    spoken = clean_text(str(spoken or "")).strip()
+    if spoken and not looks_like_service_text(re.sub(r"\[[a-z ]{3,25}\]", "", spoken)) and len(spoken) <= 700:
+        text = to_lat(spoken) if script.startswith("uz") else spoken      # og'zaki variant (sonlar so'z bilan, intonatsiya)
+    else:
+        text = " ".join(to_lat(p) if script.startswith("uz") else p for p in parts)
     audio = STT.tts(text, "ru" if script == "ru" else "uz", wav=c.get("channel") == "ig")
     if not audio:
         return False
@@ -1009,8 +1013,11 @@ def generate_reply(c, script, model=None):
             if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
     dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode
     if client_used_voice(c) and STT.tts_enabled():
-        dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет автоматически озвучен и отправлен голосовым — "
-                "не пиши, что умеешь только текстом. Пиши как для устной речи: без ссылок, эмодзи и символов.")
+        dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет озвучен и отправлен голосовым — не пиши, что умеешь только текстом.\n"
+                "Добавь в JSON поле \"voice\": тот же ответ для озвучки, как живой менеджер говорит голосом: "
+                "тепло, разговорно, связно одной-двумя фразами (узбекский — латиницей). Числа и цены — словами "
+                "(«ming to'qqiz yuz to'qson dollar», «девятьсот девяносто долларов»), без $, ссылок, эмодзи и сокращений. "
+                "Можно 1–2 тега интонации в квадратных скобках: [warmly], [cheerfully], [friendly], [softly laughs] — только к месту.")
     data, feedback, best = None, "", None
     for attempt in range(2):
         convo = msgs if not feedback else msgs + [
@@ -1133,7 +1140,7 @@ def ai_reply(key):
         send_report(c, "⚠️ Бот не смог сформулировать ответ — ответьте клиенту вручную")
     if out:
         c["error_reported"] = False
-        voiced = client_used_voice(c) and deliver_voice(c, out, script)
+        voiced = client_used_voice(c) and deliver_voice(c, out, script, d.get("voice"))
         if not voiced:
             deliver(c, out)
         with LOCK:
