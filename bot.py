@@ -33,6 +33,12 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MODELS = [m.strip() for m in os.environ.get(
     "CLAUDE_MODEL", "claude-sonnet-5-5,claude-haiku-5-5,claude-haiku-4-5-20251001").split(",") if m.strip()]
 DETECT_MODEL = os.environ.get("DETECT_MODEL", "claude-haiku-4-5-20251001")
+# Gibrid: mijoz "isiganda" (readiness >= SMART_FROM) kuchliroq model ulanadi. Bo'sh — o'chiq.
+SMART_MODEL = os.environ.get("SMART_MODEL", "").strip()
+SMART_FROM = int(os.environ.get("SMART_FROM", "55"))
+# $ / 1M token: kirish, kesh yozish (5 daq), kesh o'qish, chiqish
+PRICES = {"claude-sonnet-5-5": (2.0, 2.5, 0.10, 10.0), "claude-haiku-5-5": (0.10, 0.125, 0.01, 0.50),
+          "claude-haiku-4-5-20251001": (1.0, 1.25, 0.10, 5.0)}
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 REPORT_CHAT_ID = os.environ.get("REPORT_CHAT_ID", os.environ.get("ADMIN_CHAT_ID", "7871931220"))
 HOT_THRESHOLD = int(os.environ.get("HOT_THRESHOLD", "70"))
@@ -157,6 +163,30 @@ SYSTEM_PROMPT = """Ты — вежливый, тёплый менеджер по
 «покажите кейсы» → ["Примеры есть на businessai.uz, менеджер покажет похожие проекты на звонке."]
 «server qancha oyiga» → ["Bu foydalanishga bog'liq, aniq hisobni menejer konsultatsiyada qiladi."]
 «можно на русском?» → ["Конечно, продолжим по-русски."]
+«стоматология, записи в тетради» → ["Tushunarli, daftar bilan bemorlar yo'qolib qolishi oson.", "Kuniga taxminan nechta bemor qabulga yoziladi?"]
+«нархи бироз, ишлатиш кийин булмасмикан» → ["Tushunaman. Tizim oddiy, menejer xodimlaringizga ishlatishni ko'rsatib beradi.", "Budjet bo'yicha qaysi summaga mo'ljallayapsiz?"]
+«кафолат борми, шартнома?» → ["Shartnoma va shartlarni menejer konsultatsiyada aytadi.", "Biz bilan 22 dan ortiq kompaniya ishlaydi, 24/7 texnik yordam bor."]
+«а инстаграм тоже можно? и демо» → ["Да, агент работает и в Instagram, демо покажет менеджер.", "Удобно, если он позвонит вам сегодня?"]
+«у нас 1С старая» → ["ERP от $1990 объединит склад, финансы и отчёты в реальном времени.", "Что в текущей 1C не устраивает больше всего?"]
+«toshkentdami ofis?» → ["Ha, kompaniyamiz Toshkentda.", "Menejer bepul konsultatsiyada o'xshash loyihalarni ko'rsatadi, qo'ng'iroq qilsinmi?"]
+
+ГОТОВЫЕ ОТВЕТЫ НА ЧАСТЫЕ ВОПРОСЫ (держись этого смысла, слова подстраивай под диалог)
+- Срок / qancha vaqtda tayyor → «Muddat loyiha hajmiga bog'liq, aniq muddatni menejer aytadi»; только лендинг — «odatda bir necha kunda».
+- Гарантия / kafolat → 22+ компаний, техподдержка 24/7, примеры на businessai.uz; условия — менеджер.
+- Договор, оплата, предоплата, рассрочка, скидка / shartnoma, to'lov, oldindan to'lov, bo'lib to'lash, chegirma → «buni menejer konsultatsiyada aytadi» + предложи звонок.
+- Где вы / адрес / офис / qayerdasiz → Ташкент; точный адрес не называй, предложи консультацию по телефону или онлайн.
+- Демо / namuna / пример → примеры на businessai.uz, демо покажет менеджер.
+- Instagram, сайт, Telegram → AI-агент работает во всех трёх, отвечает на узбекском и русском.
+- 1C, Excel, своя система → связать можно, детали на консультации.
+- Заменит ли сотрудника / xodim o'rniga → не заменяет, а помогает: отвечает 24/7 и передаёт готовые заявки.
+- Ваш телефон / как связаться → +998 93 890 02 02, Telegram @businessaiuz.
+- Ты бот? → честно: AI-помощник компании, можешь подключить менеджера.
+
+ГРАМОТНЫЙ УЗБЕКСКИЙ (латиница)
+- Буквы o' и g' всегда с апострофом: bo'ladi, qo'ng'iroq, to'lov, o'zbek, g'oya, ma'lumot, so'rov.
+- Вместо русских слов: скидка → chegirma; договор → shartnoma; оплата → to'lov; рассрочка → bo'lib to'lash; заявка → ariza; клиент → mijoz; сотрудник → xodim; настройка → sozlash; удобно → qulay; конечно → albatta; понятно → tushunarli.
+- Вежливо: Siz, -ingiz, -ing: «Raqamingizni qoldiring», «Sizga qulaymi?». Вопрос через -mi: «Bugun qo'ng'iroq qilsa bo'ladimi?»
+- Простые короткие фразы лучше длинных. Не переводи дословно с русского.
 
 БАЗА
 AI Business UZ (businessai.uz), Ташкент. IT и AI-решения для бизнеса. 22+ компаний работают с нами: заводы, клиники, учебные центры и др. Примеры работ и клиенты — на сайте businessai.uz.
@@ -247,6 +277,8 @@ def load_state():
                     STATE["owners"][k[6:]] = json.loads(v)
                 elif k.startswith("tenant:"):
                     STATE.setdefault("tenants", {})[k[7:]] = json.loads(v)
+                elif k.startswith("usage:"):
+                    USAGE[k[6:]] = json.loads(v)
             print("Loaded chats from DB:", len(STATE["chats"]))
             return
         except Exception as e:
@@ -356,6 +388,39 @@ def deliver(c, parts):
 
 WORKING_MODEL = {"name": None}
 NO_THINKING = {}
+USAGE = {}   # "YYYY-MM-DD" -> {model: {calls, in, cw, cr, out}}
+
+
+def track_usage(model, usage):
+    """Haqiqiy sarfni hisoblash (kunlik, bazaga ham yoziladi)"""
+    day = datetime.now(TZ).strftime("%Y-%m-%d")
+    with LOCK:
+        u = USAGE.setdefault(day, {}).setdefault(model, {"calls": 0, "in": 0, "cw": 0, "cr": 0, "out": 0})
+        u["calls"] += 1
+        u["in"] += int(usage.get("input_tokens") or 0)
+        u["cw"] += int(usage.get("cache_creation_input_tokens") or 0)
+        u["cr"] += int(usage.get("cache_read_input_tokens") or 0)
+        u["out"] += int(usage.get("output_tokens") or 0)
+        snap = dict(USAGE[day])
+    db_put("usage:" + day, snap)
+
+
+def usage_cost(models_usage):
+    total = 0.0
+    for m, u in models_usage.items():
+        p = PRICES.get(m)
+        if p:
+            total += (u["in"] * p[0] + u["cw"] * p[1] + u["cr"] * p[2] + u["out"] * p[3]) / 1e6
+    return total
+
+
+def usage_report():
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    month = today[:7]
+    t = usage_cost(USAGE.get(today, {}))
+    mtd = sum(usage_cost(v) for d, v in USAGE.items() if d.startswith(month))
+    calls = sum(u["calls"] for u in USAGE.get(today, {}).values())
+    return f"ai cost: today ${t:.3f} ({calls} calls), this month ${mtd:.2f}"
 
 
 def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
@@ -380,6 +445,10 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
             try:
                 with urllib.request.urlopen(req, timeout=90) as r:
                     res = json.loads(r.read())
+                    try:
+                        track_usage(m, res.get("usage") or {})
+                    except Exception as e:
+                        print("Usage track error:", e)
                     if not model:
                         WORKING_MODEL["name"] = m
                     if res.get("stop_reason") == "max_tokens":
@@ -817,8 +886,16 @@ def model_history(c, script):
     return build_messages(hist)
 
 
-def generate_reply(c, script):
+def pick_model(c):
+    """Gibrid: oddiy suhbat — asosiy (arzon) model, mijoz isiganda — SMART_MODEL"""
+    if SMART_MODEL and int(c.get("readiness") or 0) >= SMART_FROM:
+        return SMART_MODEL
+    return None
+
+
+def generate_reply(c, script, model=None):
     first = not any(h["r"] == "a" for h in c["history"])
+    model = model or pick_model(c)
     msgs = model_history(c, script)
     if not msgs:
         return None
@@ -830,7 +907,9 @@ def generate_reply(c, script):
         convo = msgs if not feedback else msgs + [
             {"role": "assistant", "content": json.dumps({"messages": data.get("_raw", [])}, ensure_ascii=False)},
             {"role": "user", "content": "[СИСТЕМА] " + feedback}]
-        raw = claude(dyn, convo, max_tokens=500, cache_prefix=IG.prompt_for(c))
+        raw = claude(dyn, convo, max_tokens=500, model=model, cache_prefix=IG.prompt_for(c))
+        if not raw and model and model == pick_model(c):
+            raw = claude(dyn, convo, max_tokens=500, cache_prefix=IG.prompt_for(c))   # gibrid model ishlamasa
         if not raw:
             return None
         d = parse_json(raw)
@@ -1186,6 +1265,12 @@ def handle(update):
         if text.startswith("/start"):
             send_msg(chat_id, "Bot ishlayapti! / Бот работает!\n\nSizning chat ID: " + str(chat_id))
             return
+        if text.startswith("/eval") and str(chat_id) == str(REPORT_CHAT_ID):
+            send_msg(chat_id, EVAL.start(text[5:].strip(), lambda t: send_msg(chat_id, t)))
+            return
+        if text.startswith("/cost") and str(chat_id) == str(REPORT_CHAT_ID):
+            send_msg(chat_id, usage_report())
+            return
         if text.startswith("/ig") and str(chat_id) == str(REPORT_CHAT_ID):
             reply = IG.admin_command((msg.get("text") or "").strip())
             if reply:
@@ -1200,8 +1285,10 @@ def handle(update):
 
 
 import stt as STT  # noqa: E402  (ovozli xabarlar)
+import evalrun as EVAL  # noqa: E402  (modellarni solishtirish)
 import ig as IG  # noqa: E402  (Instagram kanali)
 IG.init(sys.modules[__name__])
+EVAL.init(sys.modules[__name__])
 
 
 class ThreadingServer(ThreadingMixIn, HTTPServer):
@@ -1234,6 +1321,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if IG.handle_get(self):
             return
+        if self.path.split("?")[0].rstrip("/") == "/eval/last":
+            IG.respond_html(self, 200, f"status: {EVAL.LAST['status']}\n\n{EVAL.LAST['text']}",
+                            ctype="text/plain; charset=utf-8")
+            return
         self.send_response(200)
         self.end_headers()
         me = tg("getMe", {})
@@ -1244,6 +1335,8 @@ class Handler(BaseHTTPRequestHandler):
         info += f"model: {WORKING_MODEL['name'] or MODELS[0]}\n"
         info += f"instagram: {'configured' if IG.configured() else 'not configured'}, accounts: {len(STATE.get('tenants', {}))}\n"
         info += f"voice: {STT.provider()}\n"
+        info += usage_report() + "\n"
+        info += f"smart model: {SMART_MODEL or 'off'} (from {SMART_FROM}%)\n"
         self.wfile.write(info.encode())
 
     def log_message(self, format, *args):
