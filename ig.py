@@ -308,6 +308,7 @@ def on_webhook(payload):
             if not text:
                 kinds = [a.get("type") for a in msg.get("attachments", [])]
                 if "audio" in kinds:
+                    core.CTX.chat = core.chat_state(f"{bc}:{sender}")
                     text = ig_voice_text(msg)
                 elif kinds:
                     text = "[клиент отправил вложение (" + ", ".join(k for k in kinds if k) + ") без подписи]"

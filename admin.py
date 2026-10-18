@@ -224,6 +224,10 @@ def build(period="30d"):
         if fd in daily:
             daily[fd][ch] += 1
             daily[fd]["leads"] += int(fl["lead"])
+        cc = c.get("cost") or {}
+        ccost = {"ai": round(cc.get("ai_usd", 0), 4), "tts_chars": int(cc.get("tts_chars", 0)),
+                 "tts_usd": round(cc.get("tts_chars", 0) * usd_per_credit, 4), "stt_sec": int(cc.get("stt_sec", 0))}
+        ccost["total"] = round(ccost["ai"] + ccost["tts_usd"], 4)
         lvl, label = stage_of(c)
         last_ts = max([h.get("ts") or 0 for h in hist] or [first])
         who = c.get("name") or "—"
@@ -232,7 +236,7 @@ def build(period="30d"):
         leads.append({"key": key, "ch": ch, "who": who, "stage": label, "lvl": lvl,
                       "readiness": int(c.get("readiness") or 0), "last": last_ts, "first": first,
                       "facts": {k: v for k, v in (c.get("facts") or {}).items() if v},
-                      "deal": deal, "status": c.get("status"),
+                      "deal": deal, "status": c.get("status"), "cost": ccost,
                       "tail": [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 ")[:300],
                                 "v": bool(h.get("voice")), "f": bool(h.get("f"))} for h in hist[-8:]]})
     leads.sort(key=lambda x: (-x["lvl"], -x["last"]))
@@ -423,7 +427,7 @@ td:first-child,th:first-child{text-align:left}th{color:var(--mut);font-weight:50
 .lead{background:var(--bg);border-radius:14px;padding:10px 12px;margin:8px 0}.lead .top{display:flex;justify-content:space-between;gap:8px}
 .badge{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--bg2);white-space:nowrap}
 .b6{background:#2e9e5b22;color:var(--ok)}.b5{background:#e69a2822;color:var(--warn)}.b4{background:#d9534f22;color:var(--bad)}.b-1{opacity:.6}
-.det{display:none;margin-top:8px;font-size:13px}.lead.open .det{display:block}
+.cst{background:var(--bg2);border-radius:10px;padding:6px 8px;margin-bottom:6px}.det{display:none;margin-top:8px;font-size:13px}.lead.open .det{display:block}
 .msg{margin:3px 0;padding:5px 8px;border-radius:10px;background:var(--bg2);max-width:92%}.msg.a{margin-left:auto;background:#2a7de11a}
 .btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}.btns button,.btns input{font:inherit;font-size:13px;border-radius:10px;border:0;padding:7px 10px}
 .btns input{width:90px;background:var(--bg2);color:var(--tx)}.won{background:var(--ok);color:#fff}.lost{background:var(--bg2);color:var(--tx)}
@@ -540,20 +544,23 @@ function cost(d){
   <p class="mut">${s.reset?"Обновится "+new Date(s.reset*1000).toLocaleDateString("ru"):""}${used>85?" · кредиты заканчиваются — бот перейдёт на текст":""}</p></div>`:""}`;
 }
 function leads(d){
- const F=[["hot","Горячие+"],["all","Все"],["won","Купили"]];
+ const F=[["hot","Горячие+"],["all","Все"],["won","Купили"],["cost","Дорогие"]];
  let L=d.leads;if(st.lf=="hot")L=L.filter(x=>x.lvl>=4);if(st.lf=="won")L=L.filter(x=>x.lvl==6);
+ if(st.lf=="cost")L=[...d.leads].sort((a,b)=>b.cost.total-a.cost.total);
+ const sum=L.reduce((s,x)=>s+x.cost.total,0);
  const items=L.map(x=>{const fx=Object.entries(x.facts).map(([k,v])=>`<div><span class="mut">${esc(k)}:</span> ${esc(v)}</div>`).join("");
   const tail=x.tail.map(m=>`<div class="msg ${m.r=="a"?"a":""}">${m.r=="a"?(m.v?"🤖🎙 ":m.f?"🔔 ":"🤖 "):""}${esc(m.t)}</div>`).join("");
-  return `<div class="lead"><div class="top"><div><b>${esc(x.who)}</b><div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${when(x.last)} · ${x.readiness}%</div></div>
+  return `<div class="lead"><div class="top"><div><b>${esc(x.who)}</b><div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${when(x.last)} · ${x.readiness}% · <span style="white-space:nowrap">💸 ${money(x.cost.total,3)}</span></div></div>
    <span class="badge b${x.lvl}">${x.stage}${x.deal&&x.deal.status=="won"?" · $"+x.deal.amount:""}</span></div>
-   <div class="det">${fx}<div style="margin-top:6px">${tail}</div>
+   <div class="det"><div class="cst"><b>Расход на клиента: ${money(x.cost.total,3)}</b><br>ИИ ${money(x.cost.ai,4)} · голос ${x.cost.tts_chars} кред. (≈${money(x.cost.tts_usd,3)}) · распознано ${x.cost.stt_sec} сек</div>${fx}<div style="margin-top:6px">${tail}</div>
    <div class="btns"><input type="number" inputmode="decimal" placeholder="сумма $">
    <button class="won" data-deal="won" data-key="${esc(x.key)}">✅ Купил</button>
    <button class="lost" data-deal="lost" data-key="${esc(x.key)}">❌ Отказ</button>
    ${x.deal&&x.deal.status?`<button class="lost" data-deal="open" data-key="${esc(x.key)}">↩︎ Сбросить</button>`:""}</div></div></div>`}).join("");
  return `<div class="chips filters">${F.map(([k,n])=>`<button class="chip ${st.lf==k?"on":""}" data-lf="${k}">${n}</button>`).join("")}</div>
+ ${L.length?`<p class="mut" style="margin:8px 4px">${L.length} клиентов · расход ${money(sum,3)} · в среднем ${money(sum/L.length,4)} на клиента</p>`:""}
  ${items||`<p class="mut" style="padding:16px 4px">Пока пусто за этот период.</p>`}
- <p class="mut">Нажмите на клиента, чтобы увидеть детали. Отметьте «Купил» с суммой — так считается выручка и конверсия в покупку.</p>`;
+ <p class="mut">Нажмите на клиента, чтобы увидеть детали. Отметьте «Купил» с суммой — так считается выручка и конверсия в покупку. Расход по клиенту считается с 19.10.</p>`;
 }
 load();
 </script></body></html>"""

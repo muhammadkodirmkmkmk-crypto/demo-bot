@@ -480,6 +480,18 @@ def chat_channel(c):
     return "tg"
 
 
+def chat_cost(**inc):
+    """Joriy mijozning shaxsiy sarfi (ai_usd, tts_chars, stt_sec) — chat holatida saqlanadi"""
+    c = getattr(CTX, "chat", None)
+    if c is None:
+        return
+    with LOCK:
+        cc = c.setdefault("cost", {})
+        for k in ("ai_usd", "tts_chars", "stt_sec"):
+            if inc.get(k):
+                cc[k] = round(cc.get(k, 0) + inc[k], 6)
+
+
 def stat(ch=None, **inc):
     """Kunlik hisoblagichlar kanal bo'yicha (bazaga ham yoziladi)"""
     day = datetime.now(TZ).strftime("%Y-%m-%d")
@@ -507,7 +519,9 @@ def track_usage(model, usage):
     db_put("usage:" + day, snap)
     one = {"in": int(usage.get("input_tokens") or 0), "cw": int(usage.get("cache_creation_input_tokens") or 0),
            "cr": int(usage.get("cache_read_input_tokens") or 0), "out": int(usage.get("output_tokens") or 0)}
-    stat(ai_usd=usage_cost({model: one}), ai_calls=1)
+    usd = usage_cost({model: one})
+    stat(ai_usd=usd, ai_calls=1)
+    chat_cost(ai_usd=usd)
 
 
 def usage_cost(models_usage):
@@ -1035,6 +1049,7 @@ def pick_model(c):
 
 def generate_reply(c, script, model=None):
     CTX.ch = chat_channel(c)
+    CTX.chat = c
     first = not any(h["r"] == "a" for h in c["history"])
     model = model or pick_model(c)
     msgs = model_history(c, script)
@@ -1331,6 +1346,7 @@ def send_followup(key):
         if not due_followup(c, now):
             return
         CTX.ch = chat_channel(c)
+        CTX.chat = c
         n = c["followups"] + 1
         total = len(FOLLOWUP_MINUTES)
         stage = FOLLOWUP_STAGES[-1] if n >= total else FOLLOWUP_STAGES[min(n - 1, len(FOLLOWUP_STAGES) - 2)]
@@ -1390,6 +1406,7 @@ def tg_voice_text(msg):
     obj = msg.get("voice") or msg.get("audio") or msg.get("video_note") or {}
     CTX.ch = "test" if str((msg.get("chat") or {}).get("id")) == str(REPORT_CHAT_ID) and \
         not msg.get("business_connection_id") else "tg"
+    CTX.chat = chat_state(f"{msg.get('business_connection_id') or 'direct'}:{(msg.get('chat') or {}).get('id')}")
     if STT.configured() and obj.get("file_id"):
         info = tg("getFile", {"file_id": obj["file_id"]}).get("result") or {}
         path = info.get("file_path")
@@ -1481,7 +1498,7 @@ import admin as ADMIN  # noqa: E402  (admin panel — Telegram Mini App)
 IG.init(sys.modules[__name__])
 EVAL.init(sys.modules[__name__])
 ADMIN.init(sys.modules[__name__])
-STT.STATS_HOOK = lambda **kw: stat(**kw)
+STT.STATS_HOOK = lambda **kw: (stat(**kw), chat_cost(**kw))
 
 
 class ThreadingServer(ThreadingMixIn, HTTPServer):
