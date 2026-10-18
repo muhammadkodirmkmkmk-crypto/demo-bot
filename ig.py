@@ -35,6 +35,7 @@ SCOPES = "instagram_business_basic,instagram_business_manage_messages"
 
 OUR_SENT = {}        # bot yuborgan xabarlar mid -> vaqt (echo'ni ajratish uchun)
 PENDING = {}         # (mijoz, matn) -> vaqt: yuborilayotgan xabar (echo API javobidan oldin kelishi mumkin)
+PENDING_AUDIO = {}   # mijoz -> vaqt: bot ovoz yuborayotgan payt
 OAUTH_STATES = {}    # state -> vaqt
 LOCK = threading.Lock()
 
@@ -171,6 +172,28 @@ def send_parts(c, parts):
 # --------------------------------------------------------------------------
 # Webhook
 # --------------------------------------------------------------------------
+def send_voice(c, audio):
+    """Ovozli javob: fayl serverimizda vaqtincha turadi, Instagram uni URL orqali oladi"""
+    t = tenants().get(c.get("tenant") or "")
+    if not t or not t.get("token"):
+        return False
+    mid_ = secrets.token_hex(12)
+    now = time.time()
+    with LOCK:
+        for k in [k for k, v in core.MEDIA.items() if now - v[1] > 3600]:
+            core.MEDIA.pop(k, None)
+        core.MEDIA[mid_] = (audio, now)
+        PENDING_AUDIO[str(c["chat_id"])] = now
+    st, res = graph("POST", "me/messages", json_body={"recipient": {"id": c["chat_id"]}, "message": {
+        "attachment": {"type": "audio", "payload": {"url": f"{PUBLIC_URL}/media/{mid_}.mp3"}}}}, token=t["token"])
+    if st == 200 and res.get("message_id"):
+        with LOCK:
+            OUR_SENT[res["message_id"]] = time.time()
+        return True
+    print("IG voice send error:", st, json.dumps(res)[:300])
+    return False
+
+
 def norm(t):
     return " ".join((t or "").split()).lower()
 
@@ -191,7 +214,8 @@ def is_our_echo(recipient, msg, ig_id):
         return True
     text = norm(msg.get("text"))
     if not text:
-        return False
+        kinds = [a.get("type") for a in msg.get("attachments", [])]
+        return "audio" in kinds and time.time() - PENDING_AUDIO.get(str(recipient), 0) < 300
     now = time.time()
     with LOCK:
         for k in [k for k, ts in PENDING.items() if now - ts > 600]:

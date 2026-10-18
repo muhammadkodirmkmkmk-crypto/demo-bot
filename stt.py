@@ -95,3 +95,70 @@ VOICE_FALLBACK = "[клиент отправил голосовое — проч
 def voice_note(text):
     """Model uchun belgi: bu ovozli xabarning matni"""
     return VOICE_PREFIX + text
+
+
+# --------------------------------------------------------------------------
+# Matn -> ovoz (javobni ovozli xabar qilib yuborish)
+# --------------------------------------------------------------------------
+VOICE_REPLIES = os.environ.get("VOICE_REPLIES", "1") != "0"
+TTS_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+TTS_MODEL = os.environ.get("TTS_MODEL", "eleven_v3")          # o'zbek tili faqat v3 da
+TTS_FORMAT = os.environ.get("TTS_FORMAT", "mp3_44100_64")
+_VOICE_CACHE = {"id": None}
+
+
+def tts_enabled():
+    return VOICE_REPLIES and bool(ELEVEN_KEY)
+
+
+def _first_voice():
+    """Sozlangan ovoz topilmasa — akkauntdagi birinchi ovoz"""
+    if _VOICE_CACHE["id"]:
+        return _VOICE_CACHE["id"]
+    try:
+        req = urllib.request.Request("https://api.elevenlabs.io/v1/voices", headers={"xi-api-key": ELEVEN_KEY})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            voices = json.loads(r.read()).get("voices") or []
+        if voices:
+            _VOICE_CACHE["id"] = voices[0]["voice_id"]
+    except Exception as e:
+        print("TTS voices error:", e)
+    return _VOICE_CACHE["id"]
+
+
+def _tts_call(text, voice, model, lang):
+    body = {"text": text, "model_id": model}
+    if lang and model != "eleven_multilingual_v2":
+        body["language_code"] = lang
+    req = urllib.request.Request(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format={TTS_FORMAT}",
+        data=json.dumps(body).encode(), method="POST",
+        headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return 200, r.read()
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read()[:300].decode("utf-8", "ignore")
+        except Exception:
+            detail = ""
+        print("TTS error:", model, voice, e.code, detail)
+        return e.code, b""
+    except Exception as e:
+        print("TTS error:", e)
+        return 0, b""
+
+
+def tts(text, lang="uz"):
+    """Matnni mp3 ovozga aylantiradi. Xato bo'lsa — b''"""
+    if not tts_enabled() or not text.strip():
+        return b""
+    voice = TTS_VOICE
+    st, audio = _tts_call(text, voice, TTS_MODEL, lang)
+    if st in (400, 404) and not audio:
+        alt = _first_voice()
+        if alt and alt != voice:
+            st, audio = _tts_call(text, alt, TTS_MODEL, lang)
+    if not audio and lang == "ru":
+        st, audio = _tts_call(text, _VOICE_CACHE["id"] or voice, "eleven_multilingual_v2", None)
+    return audio

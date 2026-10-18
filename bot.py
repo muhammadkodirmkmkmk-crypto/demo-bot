@@ -257,6 +257,18 @@ def db_put(k, v):
     return False
 
 
+def db_get(k):
+    if DB is None:
+        return None
+    try:
+        with DB_LOCK:
+            rows = DB.run("SELECT v FROM demo_bot_state WHERE k = :k", k=k)
+        return json.loads(rows[0][0]) if rows else None
+    except Exception as e:
+        print("DB read error:", e)
+        return None
+
+
 def db_delete(k):
     if DB is None:
         return False
@@ -388,6 +400,46 @@ def deliver(c, parts):
         IG.send_parts(c, parts)
     else:
         send_human(c["chat_id"], parts, c["bc_id"])
+
+
+MEDIA = {}   # id -> (bytes, vaqt): Instagram uchun vaqtinchalik ovoz fayllari (/media/<id>.mp3)
+
+
+def tg_send_voice(chat_id, audio, bc_id=None):
+    """Telegram'ga ovozli xabar (multipart)"""
+    fields = {"chat_id": str(chat_id)}
+    if bc_id:
+        fields["business_connection_id"] = bc_id
+    body, ctype = STT._multipart(fields, "voice", "voice.mp3", audio, "audio/mpeg")
+    req = urllib.request.Request("https://api.telegram.org/bot" + BOT_TOKEN + "/sendVoice", data=body, method="POST",
+                                 headers={"Content-Type": ctype})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read()).get("ok", False)
+    except Exception as e:
+        print("TG sendVoice error:", e)
+        return False
+
+
+def client_used_voice(c):
+    u = [h for h in c["history"] if h["r"] == "u"]
+    return bool(u) and u[-1]["t"].startswith(STT.VOICE_PREFIX)
+
+
+def deliver_voice(c, parts, script):
+    """Mijoz ovoz yuborgan bo'lsa — ovoz bilan javob. Bo'lmasa False (matn yuboriladi)"""
+    if not STT.tts_enabled() or not parts:
+        return False
+    text = " ".join(to_lat(p) if script.startswith("uz") else p for p in parts)
+    audio = STT.tts(text, "ru" if script == "ru" else "uz")
+    if not audio:
+        return False
+    if c.get("channel") == "ig":
+        return IG.send_voice(c, audio)
+    if TYPING_DELAY:
+        tg("sendChatAction", {"chat_id": c["chat_id"], "action": "record_voice",
+                              **({"business_connection_id": c["bc_id"]} if c.get("bc_id") else {})})
+    return tg_send_voice(c["chat_id"], audio, c.get("bc_id"))
 
 
 WORKING_MODEL = {"name": None}
@@ -992,7 +1044,9 @@ def send_report(c, title):
     if tail:
         lines.append("\nПоследние сообщения:")
         for h in tail:
-            lines.append(("👤 " if h["r"] == "u" else "🤖 ") + h["t"][:200])
+            icon = "👤 " if h["r"] == "u" else ("🤖🎙 " if h.get("voice") else "🤖 ")
+            t = h["t"].replace(STT.VOICE_PREFIX, "🎙 ")
+            lines.append(icon + t[:300])
     send_msg(target, "\n".join(lines)[:4000])
 
 # ==========================================================================
@@ -1011,10 +1065,12 @@ def ai_reply(key):
         send_report(c, "⚠️ Бот не смог сформулировать ответ — ответьте клиенту вручную")
     if out:
         c["error_reported"] = False
-        deliver(c, out)
+        voiced = client_used_voice(c) and deliver_voice(c, out, script)
+        if not voiced:
+            deliver(c, out)
         with LOCK:
             for m in out:
-                c["history"].append({"r": "a", "t": m, "ts": time.time()})
+                c["history"].append({"r": "a", "t": m, "ts": time.time(), **({"voice": True} if voiced else {})})
     with LOCK:
         for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):
             v = str(d.get(k) or "").strip()
@@ -1331,7 +1387,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if IG.handle_get(self):
             return
+        if self.path.startswith("/media/") and self.path.endswith(".mp3"):
+            item = MEDIA.get(self.path[7:-4])
+            if item:
+                IG.respond_html(self, 200, item[0], ctype="audio/mpeg")
+            else:
+                IG.respond_html(self, 404, "not found", ctype="text/plain")
+            return
         if self.path.split("?")[0].rstrip("/") == "/eval/last":
+            if EVAL.LAST["status"] == "idle":
+                saved = db_get("eval:last")
+                if saved:
+                    EVAL.LAST.update(saved)
             IG.respond_html(self, 200, f"status: {EVAL.LAST['status']}\n\n{EVAL.LAST['text']}",
                             ctype="text/plain; charset=utf-8")
             return

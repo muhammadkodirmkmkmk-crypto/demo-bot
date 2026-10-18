@@ -153,6 +153,7 @@ def run(n=30, models=None, notify=None):
                     flag = (" ⚠️" + ",".join(r["probs"])) if r["probs"] else ""
                     lines.append(f"   {short(m)}: " + " | ".join(r["out"]) + f"  [{r['ready']}% {r['action'] or ''}]{flag}")
     LAST.update(status="done", text="\n".join(lines))
+    core.db_put("eval:last", {"status": "done", "text": LAST["text"], "started": LAST["started"]})
     if notify:
         notify("🧪 Сравнение моделей готово (" + str(len(data)) + " диалогов)\n\n" + "\n".join(summary) +
                f"\n\nПодробно: {core.IG.PUBLIC_URL}/eval/last")
