@@ -10,6 +10,7 @@ import json
 import uuid
 import urllib.request
 import urllib.error
+import urllib.parse
 
 ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -101,10 +102,55 @@ def voice_note(text):
 # Matn -> ovoz (javobni ovozli xabar qilib yuborish)
 # --------------------------------------------------------------------------
 VOICE_REPLIES = os.environ.get("VOICE_REPLIES", "1") != "0"
-TTS_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+TTS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()        # aniq ID berilsa — shu
+TTS_VOICE_NAME = os.environ.get("ELEVENLABS_VOICE_NAME", "Bekzod").strip()  # aks holda nomi bo'yicha topiladi
+DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"
 TTS_MODEL = os.environ.get("TTS_MODEL", "eleven_v3")          # o'zbek tili faqat v3 da
 TTS_FORMAT = os.environ.get("TTS_FORMAT", "mp3_44100_64")
-_VOICE_CACHE = {"id": None}
+_VOICE_CACHE = {"id": None, "resolved": None}
+
+
+def _api(method, path, body=None):
+    req = urllib.request.Request("https://api.elevenlabs.io" + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        print("ElevenLabs API error:", method, path.split("?")[0], e.code, e.read()[:200])
+    except Exception as e:
+        print("ElevenLabs API error:", e)
+    return {}
+
+
+def resolve_voice():
+    """Ovoz: ELEVENLABS_VOICE_ID yoki nomi bo'yicha (o'z ovozlarimiz, bo'lmasa kutubxonadan qo'shiladi)"""
+    if TTS_VOICE_ID:
+        return TTS_VOICE_ID
+    if _VOICE_CACHE["resolved"]:
+        return _VOICE_CACHE["resolved"]
+    name = TTS_VOICE_NAME.lower()
+    if name:
+        for v in _api("GET", "/v1/voices").get("voices") or []:
+            if (v.get("name") or "").lower().startswith(name):
+                _VOICE_CACHE["resolved"] = v["voice_id"]
+                print("TTS voice (my voices):", v.get("name"), v["voice_id"])
+                return v["voice_id"]
+        found = _api("GET", "/v1/shared-voices?page_size=30&search=" + urllib.parse.quote(TTS_VOICE_NAME)).get("voices") or []
+        found = [v for v in found if (v.get("name") or "").lower().startswith(name)]
+        found.sort(key=lambda v: 0 if "uz" in str(v.get("language") or "").lower() else 1)
+        if found:
+            v = found[0]
+            added = _api("POST", f"/v1/voices/add/{v.get('public_owner_id')}/{v.get('voice_id')}",
+                         {"new_name": v.get("name") or TTS_VOICE_NAME})
+            vid = added.get("voice_id") or v.get("voice_id")
+            _VOICE_CACHE["resolved"] = vid
+            print("TTS voice (library, added):", v.get("name"), vid)
+            return vid
+        print("TTS voice not found by name:", TTS_VOICE_NAME)
+    _VOICE_CACHE["resolved"] = DEFAULT_VOICE
+    return DEFAULT_VOICE
 
 
 def tts_enabled():
@@ -159,7 +205,7 @@ def tts(text, lang="uz", wav=False):
     if not tts_enabled() or not text.strip():
         return b""
     fmt = "pcm_16000" if wav else None
-    voice = TTS_VOICE
+    voice = resolve_voice()
     st, audio = _tts_call(text, voice, TTS_MODEL, lang, fmt)
     if st in (400, 404) and not audio:
         alt = _first_voice()
