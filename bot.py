@@ -218,6 +218,7 @@ LOCK = threading.RLock()
 CHAT_LOCKS = {}
 STATE = {"chats": {}, "owners": {}}
 DB = None
+DB_LOCK = threading.RLock()   # pg8000 ulanishi bir vaqtda bitta oqim uchun
 
 
 def db_connect():
@@ -243,14 +244,16 @@ def db_put(k, v):
     global DB
     if DB is None:
         return False
-    for attempt in range(2):
-        try:
-            DB.run("INSERT INTO demo_bot_state (k, v, updated) VALUES (:k, :v, now()) "
-                   "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated = now()", k=k, v=json.dumps(v, ensure_ascii=False))
-            return True
-        except Exception as e:
-            print("DB write error:", e)
-            db_connect()
+    data = json.dumps(v, ensure_ascii=False)
+    with DB_LOCK:
+        for attempt in range(2):
+            try:
+                DB.run("INSERT INTO demo_bot_state (k, v, updated) VALUES (:k, :v, now()) "
+                       "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated = now()", k=k, v=data)
+                return True
+            except Exception as e:
+                print("DB write error:", e)
+                db_connect()
     return False
 
 
@@ -258,7 +261,8 @@ def db_delete(k):
     if DB is None:
         return False
     try:
-        DB.run("DELETE FROM demo_bot_state WHERE k = :k", k=k)
+        with DB_LOCK:
+            DB.run("DELETE FROM demo_bot_state WHERE k = :k", k=k)
         return True
     except Exception as e:
         print("DB delete error:", e)
@@ -388,6 +392,7 @@ def deliver(c, parts):
 
 WORKING_MODEL = {"name": None}
 NO_THINKING = {}
+THINKING = {}   # model -> "thinking" parametri (API o'zgarsa moslashadi)
 USAGE = {}   # "YYYY-MM-DD" -> {model: {calls, in, cw, cr, out}}
 
 
@@ -435,7 +440,7 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
     for m in models:
         payload = {"model": m, "max_tokens": max(max_tokens, 1500), "system": sys_blocks, "messages": messages}
         if NO_THINKING.get(m, True):
-            payload["thinking"] = {"type": "disabled"}
+            payload["thinking"] = THINKING.get(m, {"type": "disabled"})
         body = json.dumps(payload).encode()
         for attempt in range(3):
             req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST")
@@ -462,6 +467,11 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
                 except Exception:
                     pass
                 print("Claude HTTP error:", m, e.code, detail)
+                if e.code == 400 and "between_tools" in detail and payload.get("thinking", {}).get("type") != "between_tools":
+                    THINKING[m] = {"type": "between_tools"}   # yangi API: "o'ylamasdan" rejimi shunday yoziladi
+                    payload["thinking"] = THINKING[m]
+                    body = json.dumps(payload).encode()
+                    continue
                 if e.code == 400 and "thinking" in detail.lower() and "thinking" in payload:
                     NO_THINKING[m] = False          # bu model "thinking" parametrini qabul qilmaydi
                     payload.pop("thinking")
