@@ -36,6 +36,8 @@ DETECT_MODEL = os.environ.get("DETECT_MODEL", "claude-haiku-4-5-20251001")
 # Gibrid: mijoz "isiganda" (readiness >= SMART_FROM) kuchliroq model ulanadi. Bo'sh — o'chiq.
 SMART_MODEL = os.environ.get("SMART_MODEL", "").strip()
 SMART_FROM = int(os.environ.get("SMART_FROM", "55"))
+# Asosiy model javob bera olmasa — shu model bilan qayta urinish
+FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "claude-sonnet-5-5").strip()
 # $ / 1M token: kirish, kesh yozish (5 daq), kesh o'qish, chiqish
 PRICES = {"claude-sonnet-5-5": (2.0, 2.5, 0.10, 10.0), "claude-haiku-5-5": (0.10, 0.125, 0.01, 0.50),
           "claude-haiku-4-5-20251001": (1.0, 1.25, 0.10, 5.0)}
@@ -1006,6 +1008,9 @@ def generate_reply(c, script, model=None):
     mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: 3 сообщения — приветствие; как дела; лёгкое уточнение его вопроса."
             if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
     dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode
+    if client_used_voice(c) and STT.tts_enabled():
+        dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет автоматически озвучен и отправлен голосовым — "
+                "не пиши, что умеешь только текстом. Пиши как для устной речи: без ссылок, эмодзи и символов.")
     data, feedback, best = None, "", None
     for attempt in range(2):
         convo = msgs if not feedback else msgs + [
@@ -1059,6 +1064,8 @@ def generate_reply(c, script, model=None):
         has_phone = bool(PHONE_RE.search(" ".join(h["t"] for h in c["history"] if h["r"] == "u")))
         if asks_now and not has_phone and (ASK_PHONE.search(last_bot) or REFUSAL.search(last_client)):
             problems.append("Не проси номер телефона снова — клиент отказался или ты уже просил. Ответь по сути или тепло попрощайся.")
+        if script == "ru" and re.search(r"(?i)\b(rahmat|albatta|tushunarli|iltimos|menejer|bemalol|qo'ng'iroq)\b", " ".join(raw_msgs)):
+            problems.append("Клиент пишет по-русски — отвечай только по-русски, без узбекских слов.")
         if script.startswith("uz") and re.search(r"(?i)\b(дорого|короче|скидка|просто|конечно|хорошо)\b", " ".join(raw_msgs)):
             problems.append("В узбекском ответе русские слова. Пиши только по-узбекски латиницей.")
         if best is None or len(problems) < best[0]:
@@ -1075,6 +1082,9 @@ def generate_reply(c, script, model=None):
     out = [m for m in out if m and not is_repeat(m, c["history"], 0.9) and not looks_like_service_text(m)]
     out = out[:3] if first else out[:2]
     data["messages"] = out
+    if not out and FALLBACK_MODEL and model != FALLBACK_MODEL and WORKING_MODEL["name"] != FALLBACK_MODEL:
+        print("Reply empty — retrying with", FALLBACK_MODEL)
+        return generate_reply(c, script, model=FALLBACK_MODEL)
     return data
 
 # ==========================================================================

@@ -134,9 +134,7 @@ def pcm_to_wav(pcm, rate=16000):
 
 
 def _tts_call(text, voice, model, lang, fmt=None):
-    body = {"text": text, "model_id": model}
-    if lang and model != "eleven_multilingual_v2":
-        body["language_code"] = lang
+    body = {"text": text, "model_id": model}   # til matndan avtomatik aniqlanadi (v3 "uz" kodini qabul qilmaydi)
     req = urllib.request.Request(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format={fmt or TTS_FORMAT}",
         data=json.dumps(body).encode(), method="POST",
