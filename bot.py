@@ -553,14 +553,17 @@ def client_script(c):
     """Javob yoziladigan til/alifbo: oxirgi aniq mijoz xabari + suhbat konteksti + mijoz iltimosi"""
     prev = None
     for h in c["history"]:
-        if h["r"] != "u" or h["t"].startswith("[") or is_site_button(h["t"]):
+        t = h["t"]
+        if h["r"] == "u" and t.startswith(STT.VOICE_PREFIX):
+            t = t[len(STT.VOICE_PREFIX):]
+        if h["r"] != "u" or t.startswith("[") or is_site_button(t):
             continue
-        s = classify_script(h["t"], prev)
+        s = classify_script(t, prev)
         if s:
             prev = s
-        if LANG_REQ_RU.search(h["t"]):
+        if LANG_REQ_RU.search(t):
             c["lang_pref"] = "ru"
-        elif LANG_REQ_UZ.search(h["t"]):
+        elif LANG_REQ_UZ.search(t):
             c["lang_pref"] = "uz"
     script = prev or c.get("script") or "uz_lat"
     pref = c.get("lang_pref")
@@ -1119,6 +1122,22 @@ def scheduler():
 # ==========================================================================
 # Update handler
 # ==========================================================================
+def tg_voice_text(msg):
+    """Telegram ovozli xabari -> matn (STT sozlangan bo'lsa)"""
+    obj = msg.get("voice") or msg.get("audio") or msg.get("video_note") or {}
+    if STT.configured() and obj.get("file_id"):
+        info = tg("getFile", {"file_id": obj["file_id"]}).get("result") or {}
+        path = info.get("file_path")
+        if path:
+            data = STT.fetch("https://api.telegram.org/file/bot" + BOT_TOKEN + "/" + path)
+            name = path.rsplit("/", 1)[-1] or "voice.ogg"
+            mime = obj.get("mime_type") or ("video/mp4" if msg.get("video_note") else "audio/ogg")
+            t = STT.transcribe(data, name, mime)
+            if t:
+                return STT.voice_note(t)
+    return STT.VOICE_FALLBACK
+
+
 def handle(update):
     if "business_connection" in update:
         bc = update["business_connection"]
@@ -1146,7 +1165,7 @@ def handle(update):
         text = (msg.get("text") or msg.get("caption") or "").strip()
         if not text:
             if msg.get("voice") or msg.get("audio") or msg.get("video_note"):
-                text = "[клиент отправил голосовое — прочитать нельзя; вежливо попроси написать текстом]"
+                text = tg_voice_text(msg)
             elif msg.get("photo") or msg.get("document") or msg.get("video"):
                 text = "[клиент отправил файл/фото без подписи]"
             elif msg.get("contact"):
@@ -1180,6 +1199,7 @@ def handle(update):
         tg("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
 
 
+import stt as STT  # noqa: E402  (ovozli xabarlar)
 import ig as IG  # noqa: E402  (Instagram kanali)
 IG.init(sys.modules[__name__])
 
@@ -1223,6 +1243,7 @@ class Handler(BaseHTTPRequestHandler):
             info += f"chats: {len(STATE['chats'])}\nmemory: {'postgres' if DB is not None else 'file'}\n"
         info += f"model: {WORKING_MODEL['name'] or MODELS[0]}\n"
         info += f"instagram: {'configured' if IG.configured() else 'not configured'}, accounts: {len(STATE.get('tenants', {}))}\n"
+        info += f"voice: {STT.provider()}\n"
         self.wfile.write(info.encode())
 
     def log_message(self, format, *args):

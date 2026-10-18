@@ -34,6 +34,7 @@ OWN_IG_USERNAME = os.environ.get("OWN_IG_USERNAME", "aibusiness_uz").lstrip("@")
 SCOPES = "instagram_business_basic,instagram_business_manage_messages"
 
 OUR_SENT = {}        # bot yuborgan xabarlar mid -> vaqt (echo'ni ajratish uchun)
+PENDING = {}         # (mijoz, matn) -> vaqt: yuborilayotgan xabar (echo API javobidan oldin kelishi mumkin)
 OAUTH_STATES = {}    # state -> vaqt
 LOCK = threading.Lock()
 
@@ -150,6 +151,8 @@ def send_parts(c, parts):
         print("IG send skipped: no token for tenant", c.get("tenant"))
         return
     for p in parts:
+        with LOCK:
+            PENDING[(str(c["chat_id"]), norm(p[:900]))] = time.time()
         if core.TYPING_DELAY:
             graph("POST", "me/messages", json_body={"recipient": {"id": c["chat_id"]}, "sender_action": "typing_on"},
                   token=t["token"])
@@ -168,6 +171,76 @@ def send_parts(c, parts):
 # --------------------------------------------------------------------------
 # Webhook
 # --------------------------------------------------------------------------
+def norm(t):
+    return " ".join((t or "").split()).lower()
+
+
+def variants(t):
+    """Tarixdagi matn (lotin) va mijozga yuborilgan ko'rinishi (kirill) — ikkalasi"""
+    out = {norm(t)}
+    try:
+        out.add(norm(core.render(t, "uz_cyr")))
+    except Exception:
+        pass
+    return out
+
+
+def is_our_echo(recipient, msg, ig_id):
+    """Echo botning o'z xabarimi? mid, yuborilayotgan matn yoki yaqindagi bot javobi bo'yicha"""
+    if msg.get("mid") in OUR_SENT:
+        return True
+    text = norm(msg.get("text"))
+    if not text:
+        return False
+    now = time.time()
+    with LOCK:
+        for k in [k for k, ts in PENDING.items() if now - ts > 600]:
+            PENDING.pop(k, None)
+        if PENDING.pop((str(recipient), text), None) is not None:
+            return True
+    c = core.STATE["chats"].get(f"ig:{ig_id}:{recipient}")
+    if c:
+        for h in c["history"][-12:]:
+            if h["r"] == "a" and not h.get("human") and now - h.get("ts", 0) < 900 and text in variants(h["t"]):
+                return True
+    return False
+
+
+def repair_echo_pauses():
+    """Eski xato: botning o'z xabari 'egasi javob berdi' deb olingan va chat to'xtatilgan — tuzatamiz"""
+    fixed = 0
+    for key, c in list(core.STATE["chats"].items()):
+        if not key.startswith("ig:"):
+            continue
+        bot_texts = set()
+        for h in c["history"]:
+            if h["r"] == "a" and not h.get("human"):
+                bot_texts |= variants(h["t"])
+        bad = [h for h in c["history"] if h.get("human") and norm(h["t"]) in bot_texts]
+        if bad:
+            c["history"] = [h for h in c["history"] if h not in bad]
+            if not any(h.get("human") for h in c["history"]):
+                c["paused_until"] = 0
+            core.save_chat(key)
+            fixed += 1
+    if fixed:
+        print("IG: repaired echo pauses in", fixed, "chats")
+    return fixed
+
+
+def ig_voice_text(msg):
+    """Instagram ovozli xabari -> matn"""
+    for a in msg.get("attachments", []):
+        if a.get("type") == "audio":
+            url = (a.get("payload") or {}).get("url")
+            if url and core.STT.configured():
+                t = core.STT.transcribe(core.STT.fetch(url), "voice.mp4", "audio/mp4")
+                if t:
+                    return core.STT.voice_note(t)
+            return core.STT.VOICE_FALLBACK
+    return ""
+
+
 def valid_signature(body, header):
     if not IG_APP_SECRET:
         return True
@@ -198,7 +271,7 @@ def on_webhook(payload):
             recipient = str((ev.get("recipient") or {}).get("id"))
             bc = "ig:" + ig_id
             if msg.get("is_echo"):
-                if msg.get("mid") in OUR_SENT:
+                if is_our_echo(recipient, msg, ig_id):
                     continue                         # botning o'z xabari
                 if t is not None:                    # ega Instagram'dan o'zi javob berdi — bot jim turadi
                     core.on_owner_message(recipient, bc, msg.get("text") or "")
@@ -210,7 +283,7 @@ def on_webhook(payload):
             if not text:
                 kinds = [a.get("type") for a in msg.get("attachments", [])]
                 if "audio" in kinds:
-                    text = "[клиент отправил голосовое — прочитать нельзя; вежливо попроси написать текстом]"
+                    text = ig_voice_text(msg)
                 elif kinds:
                     text = "[клиент отправил вложение (" + ", ".join(k for k in kinds if k) + ") без подписи]"
                 else:
@@ -294,6 +367,10 @@ def finish_oauth(code):
 
 def maintenance():
     """Tokenlarni yangilash (60 kunlik, kamida 24 soatlik bo'lishi kerak)"""
+    try:
+        repair_echo_pauses()
+    except Exception as e:
+        print("IG repair error:", e)
     now = time.time()
     for t in list(tenants().values()):
         if not t.get("token"):

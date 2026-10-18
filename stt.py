@@ -1,0 +1,97 @@
+"""
+Ovozli xabarlarni matnga aylantirish (speech-to-text).
+
+Muhit o'zgaruvchilari (bittasi yetarli):
+  ELEVENLABS_API_KEY  — ElevenLabs Scribe (o'zbek tilini yaxshi taniydi), model: STT_MODEL (default scribe_v2)
+  OPENAI_API_KEY      — OpenAI, model: STT_OPENAI_MODEL (default whisper-1)
+"""
+import os
+import json
+import uuid
+import urllib.request
+import urllib.error
+
+ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
+ELEVEN_MODELS = [m for m in [os.environ.get("STT_MODEL", "scribe_v2"), "scribe_v1"] if m]
+OPENAI_MODEL = os.environ.get("STT_OPENAI_MODEL", "whisper-1")
+MAX_BYTES = 20 * 1024 * 1024
+
+
+def configured():
+    return bool(ELEVEN_KEY or OPENAI_KEY)
+
+
+def provider():
+    return "elevenlabs" if ELEVEN_KEY else ("openai" if OPENAI_KEY else "none")
+
+
+def fetch(url, timeout=30):
+    """Fayl yuklab olish (Telegram file API yoki Instagram CDN)"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(MAX_BYTES + 1)
+            return data if len(data) <= MAX_BYTES else b""
+    except Exception as e:
+        print("STT fetch error:", str(url).split("?")[0], e)
+        return b""
+
+
+def _multipart(fields, file_field, filename, data, mime):
+    boundary = "----stt" + uuid.uuid4().hex
+    out = []
+    for k, v in fields.items():
+        out.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode())
+    out.append((f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: {mime}\r\n\r\n").encode())
+    out.append(data)
+    out.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(out), "multipart/form-data; boundary=" + boundary
+
+
+def _post(url, headers, fields, filename, data, mime, timeout=90):
+    body, ctype = _multipart(fields, "file", filename, data, mime)
+    req = urllib.request.Request(url, data=body, method="POST", headers=dict(headers, **{"Content-Type": ctype}))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except Exception:
+            return e.code, {}
+    except Exception as e:
+        print("STT request error:", e)
+        return 0, {}
+
+
+def transcribe(data, filename="voice.ogg", mime="audio/ogg"):
+    """Ovozni matnga aylantiradi. Xato bo'lsa — bo'sh satr."""
+    if not data:
+        return ""
+    if ELEVEN_KEY:
+        for model in ELEVEN_MODELS:
+            st, res = _post("https://api.elevenlabs.io/v1/speech-to-text", {"xi-api-key": ELEVEN_KEY},
+                            {"model_id": model}, filename, data, mime)
+            if st == 200 and (res.get("text") or "").strip():
+                return res["text"].strip()
+            print("STT elevenlabs error:", model, st, json.dumps(res)[:200])
+            if st not in (400, 404, 422):
+                break
+    if OPENAI_KEY:
+        st, res = _post("https://api.openai.com/v1/audio/transcriptions", {"Authorization": "Bearer " + OPENAI_KEY},
+                        {"model": OPENAI_MODEL}, filename, data, mime)
+        if st == 200 and (res.get("text") or "").strip():
+            return res["text"].strip()
+        print("STT openai error:", st, json.dumps(res)[:200])
+    return ""
+
+
+VOICE_PREFIX = "[голосовое сообщение, расшифровка] "
+VOICE_FALLBACK = "[клиент отправил голосовое — прочитать нельзя; вежливо попроси написать текстом]"
+
+
+def voice_note(text):
+    """Model uchun belgi: bu ovozli xabarning matni"""
+    return VOICE_PREFIX + text
