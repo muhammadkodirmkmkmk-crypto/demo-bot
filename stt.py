@@ -17,6 +17,15 @@ OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 ELEVEN_MODELS = [m for m in [os.environ.get("STT_MODEL", "scribe_v2"), "scribe_v1"] if m]
 OPENAI_MODEL = os.environ.get("STT_OPENAI_MODEL", "whisper-1")
 MAX_BYTES = 20 * 1024 * 1024
+STATS_HOOK = None   # bot.py beradi: sarfni hisoblash (stt_sec, tts_chars)
+
+
+def _hook(**kw):
+    if STATS_HOOK:
+        try:
+            STATS_HOOK(**kw)
+        except Exception as e:
+            print("Stats hook error:", e)
 
 
 def configured():
@@ -76,6 +85,8 @@ def transcribe(data, filename="voice.ogg", mime="audio/ogg"):
             st, res = _post("https://api.elevenlabs.io/v1/speech-to-text", {"xi-api-key": ELEVEN_KEY},
                             {"model_id": model}, filename, data, mime)
             if st == 200 and (res.get("text") or "").strip():
+                ends = [w.get("end") or 0 for w in res.get("words") or [] if isinstance(w, dict)]
+                _hook(stt_sec=round(max(ends) if ends else len(data) / 4000.0, 1), stt_n=1)
                 return res["text"].strip()
             print("STT elevenlabs error:", model, st, json.dumps(res)[:200])
             if st not in (400, 404, 422):
@@ -84,6 +95,7 @@ def transcribe(data, filename="voice.ogg", mime="audio/ogg"):
         st, res = _post("https://api.openai.com/v1/audio/transcriptions", {"Authorization": "Bearer " + OPENAI_KEY},
                         {"model": OPENAI_MODEL}, filename, data, mime)
         if st == 200 and (res.get("text") or "").strip():
+            _hook(stt_sec=round(len(data) / 4000.0, 1), stt_n=1)
             return res["text"].strip()
         print("STT openai error:", st, json.dumps(res)[:200])
     return ""
@@ -222,4 +234,6 @@ def tts(text, lang="uz", wav=False):
             st, audio = _tts_call(text, alt, TTS_MODEL, lang, fmt)
     if not audio and lang == "ru":
         st, audio = _tts_call(text, _VOICE_CACHE["id"] or voice, "eleven_multilingual_v2", None, fmt)
+    if audio:
+        _hook(tts_chars=len(text), tts_n=1)
     return pcm_to_wav(audio) if (wav and audio) else audio

@@ -257,6 +257,7 @@ def ig_voice_text(msg):
     for a in msg.get("attachments", []):
         if a.get("type") == "audio":
             url = (a.get("payload") or {}).get("url")
+            core.CTX.ch = "ig"
             if url and core.STT.configured():
                 t = core.STT.transcribe(core.STT.fetch(url), "voice.mp4", "audio/mp4")
                 if t:

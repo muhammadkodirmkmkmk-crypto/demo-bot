@@ -309,6 +309,8 @@ def load_state():
                     STATE.setdefault("tenants", {})[k[7:]] = json.loads(v)
                 elif k.startswith("usage:"):
                     USAGE[k[6:]] = json.loads(v)
+                elif k.startswith("stats:"):
+                    STATS[k[6:]] = json.loads(v)
             print("Loaded chats from DB:", len(STATE["chats"]))
             return
         except Exception as e:
@@ -464,6 +466,31 @@ WORKING_MODEL = {"name": None}
 NO_THINKING = {}
 THINKING = {}   # model -> "thinking" parametri (API o'zgarsa moslashadi)
 USAGE = {}   # "YYYY-MM-DD" -> {model: {calls, in, cw, cr, out}}
+STATS = {}   # "YYYY-MM-DD" -> {kanal: {hodisa: son}} — admin panel uchun
+CTX = threading.local()   # joriy oqim qaysi kanal uchun ishlayapti (tg / ig / test / eval)
+
+
+def chat_channel(c):
+    if c.get("chat_id") == "eval":
+        return "eval"
+    if c.get("channel") == "ig":
+        return "ig"
+    if not c.get("bc_id") and str(c.get("chat_id")) == str(REPORT_CHAT_ID):
+        return "test"
+    return "tg"
+
+
+def stat(ch=None, **inc):
+    """Kunlik hisoblagichlar kanal bo'yicha (bazaga ham yoziladi)"""
+    day = datetime.now(TZ).strftime("%Y-%m-%d")
+    ch = ch or getattr(CTX, "ch", "") or "tg"
+    with LOCK:
+        s = STATS.setdefault(day, {}).setdefault(ch, {})
+        for k, v in inc.items():
+            if v:
+                s[k] = s.get(k, 0) + v
+        snap = json.loads(json.dumps(STATS[day]))
+    db_put("stats:" + day, snap)
 
 
 def track_usage(model, usage):
@@ -478,6 +505,9 @@ def track_usage(model, usage):
         u["out"] += int(usage.get("output_tokens") or 0)
         snap = dict(USAGE[day])
     db_put("usage:" + day, snap)
+    one = {"in": int(usage.get("input_tokens") or 0), "cw": int(usage.get("cache_creation_input_tokens") or 0),
+           "cr": int(usage.get("cache_read_input_tokens") or 0), "out": int(usage.get("output_tokens") or 0)}
+    stat(ai_usd=usage_cost({model: one}), ai_calls=1)
 
 
 def usage_cost(models_usage):
@@ -1004,6 +1034,7 @@ def pick_model(c):
 
 
 def generate_reply(c, script, model=None):
+    CTX.ch = chat_channel(c)
     first = not any(h["r"] == "a" for h in c["history"])
     model = model or pick_model(c)
     msgs = model_history(c, script)
@@ -1146,6 +1177,7 @@ def ai_reply(key):
         with LOCK:
             for m in out:
                 c["history"].append({"r": "a", "t": m, "ts": time.time(), **({"voice": True} if voiced else {})})
+        stat(chat_channel(c), replies=1, msgs_out=len(out), voice_out=int(bool(voiced)))
     with LOCK:
         for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):
             v = str(d.get(k) or "").strip()
@@ -1162,6 +1194,8 @@ def ai_reply(key):
         c["lead_sent"] = True
         c["hot_sent"] = True
         c["status"] = "lead"
+        c["lead_ts"] = time.time()
+        stat(chat_channel(c), leads=1)
         if not c["facts"].get("phone"):
             m = PHONE_RE.search(client_text)
             if m:
@@ -1169,6 +1203,7 @@ def ai_reply(key):
         send_report(c, "🔥 ЛИД: клиент оставил контакт / согласился")
     elif c["readiness"] >= HOT_THRESHOLD and not c.get("hot_sent"):
         c["hot_sent"] = True
+        stat(chat_channel(c), hot=1)
         send_report(c, "🌶 ГОРЯЧИЙ КЛИЕНТ — пора подключаться")
     if action == "stop":
         c["status"] = "stopped"
@@ -1189,12 +1224,18 @@ def record_client(chat_id, text, bc_id, sender):
         if sender.get("username"):
             c["username"] = sender["username"]
         stamp = time.time()
+        new = not c.get("first_ts")
+        if new:
+            old = [h.get("ts") or 0 for h in c["history"] if h["r"] == "u"]
+            new = not old
+            c["first_ts"] = min(old) if old else stamp
         c["history"].append({"r": "u", "t": text, "ts": stamp})
         c["history"] = c["history"][-MAX_HISTORY * 2:]
         c["last_client"] = stamp
         c["followups"] = 0
         if c["status"] == "stopped":
             c["status"] = "active"
+    stat(chat_channel(c), msgs_in=1, new_chats=int(new), voice_in=int(text.startswith(STT.VOICE_PREFIX)))
     return key, stamp
 
 
@@ -1289,6 +1330,7 @@ def send_followup(key):
         now = time.time()
         if not due_followup(c, now):
             return
+        CTX.ch = chat_channel(c)
         n = c["followups"] + 1
         total = len(FOLLOWUP_MINUTES)
         stage = FOLLOWUP_STAGES[-1] if n >= total else FOLLOWUP_STAGES[min(n - 1, len(FOLLOWUP_STAGES) - 2)]
@@ -1320,6 +1362,7 @@ def send_followup(key):
             deliver(c, [text])
             with LOCK:
                 c["history"].append({"r": "a", "t": text, "ts": time.time(), "f": n})
+            stat(chat_channel(c), followups=1)
         save_chat(key)
 
 
@@ -1345,6 +1388,8 @@ def scheduler():
 def tg_voice_text(msg):
     """Telegram ovozli xabari -> matn (STT sozlangan bo'lsa)"""
     obj = msg.get("voice") or msg.get("audio") or msg.get("video_note") or {}
+    CTX.ch = "test" if str((msg.get("chat") or {}).get("id")) == str(REPORT_CHAT_ID) and \
+        not msg.get("business_connection_id") else "tg"
     if STT.configured() and obj.get("file_id"):
         info = tg("getFile", {"file_id": obj["file_id"]}).get("result") or {}
         path = info.get("file_path")
@@ -1405,6 +1450,10 @@ def handle(update):
         text = (msg.get("text") or "").strip()
         if text.startswith("/start"):
             send_msg(chat_id, "Bot ishlayapti! / Бот работает!\n\nSizning chat ID: " + str(chat_id))
+            if str(chat_id) == str(REPORT_CHAT_ID):
+                ADMIN.panel_button(chat_id)
+            return
+        if text.startswith("/") and ADMIN.command(chat_id, text):
             return
         if text.startswith("/eval") and str(chat_id) == str(REPORT_CHAT_ID):
             send_msg(chat_id, EVAL.start(text[5:].strip(), lambda t: send_msg(chat_id, t)))
@@ -1428,8 +1477,11 @@ def handle(update):
 import stt as STT  # noqa: E402  (ovozli xabarlar)
 import evalrun as EVAL  # noqa: E402  (modellarni solishtirish)
 import ig as IG  # noqa: E402  (Instagram kanali)
+import admin as ADMIN  # noqa: E402  (admin panel — Telegram Mini App)
 IG.init(sys.modules[__name__])
 EVAL.init(sys.modules[__name__])
+ADMIN.init(sys.modules[__name__])
+STT.STATS_HOOK = lambda **kw: stat(**kw)
 
 
 class ThreadingServer(ThreadingMixIn, HTTPServer):
@@ -1440,7 +1492,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
-        if IG.handle_post(self, body):
+        if IG.handle_post(self, body) or ADMIN.handle_post(self, body):
             return
         self.send_response(200)
         self.end_headers()
@@ -1460,7 +1512,7 @@ class Handler(BaseHTTPRequestHandler):
             print("Error:", e)
 
     def do_GET(self):
-        if IG.handle_get(self):
+        if IG.handle_get(self) or ADMIN.handle_get(self):
             return
         if self.path.startswith("/media/") and self.path.split("?")[0].endswith((".mp3", ".wav")):
             name = self.path.split("?")[0][7:]
@@ -1512,6 +1564,7 @@ if __name__ == "__main__":
             "drop_pending_updates": True
         })
         print("Webhook:", result)
+    threading.Thread(target=ADMIN.setup_menu, daemon=True).start()
     threading.Thread(target=scheduler, daemon=True).start()
     print("Bot running on port", port, "| memory:", "postgres" if DB is not None else "file", "| models:", MODELS)
     ThreadingServer(("0.0.0.0", port), Handler).serve_forever()
