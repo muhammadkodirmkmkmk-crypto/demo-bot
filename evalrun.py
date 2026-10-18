@@ -15,7 +15,7 @@ core = None
 EVAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_set.json")
 DEFAULT_MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5"]
 LAST = {"status": "idle", "text": "Eval hali ishga tushirilmagan. Telegram: /eval 30", "started": 0}
-RU_ONLY = re.compile("[ыэщъЫЭЩЪ]")
+RU_ONLY = re.compile("[ыщЫЩ]")   # э, ъ o'zbek kirillida ham bor
 
 
 def init(bot_module):
@@ -56,6 +56,17 @@ def check(out, script, history):
     nums = sorted({n for m in out for n in core.bad_numbers(m, history)})
     if nums:
         probs.append("NUM(" + ",".join(nums) + ")")
+    wp = core.wrong_prices(text)
+    if wp:
+        probs.append("PRICE(" + ",".join(f"{w}={x}" for w, p, x in wp) + ")")
+    if any("\n" in m for m in out):
+        probs.append("NEWLINE")
+    asks = any(core.ASK_PHONE.search(m) and ("?" in m or re.search(r"(?i)(qoldir|қолдир|оставь|оставит)", m)) for m in out)
+    prev_bot = " ".join(h["t"] for h in history[-4:] if h["r"] == "a")
+    prev_client = " ".join(h["t"] for h in history[-3:] if h["r"] == "u")
+    has_phone = bool(core.PHONE_RE.search(" ".join(h["t"] for h in history if h["r"] == "u")))
+    if asks and not has_phone and (core.ASK_PHONE.search(prev_bot) or core.REFUSAL.search(prev_client)):
+        probs.append("PUSHY")
     return probs
 
 

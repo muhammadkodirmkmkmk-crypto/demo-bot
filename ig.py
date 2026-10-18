@@ -185,7 +185,7 @@ def send_voice(c, audio):
         core.MEDIA[mid_] = (audio, now)
         PENDING_AUDIO[str(c["chat_id"])] = now
     st, res = graph("POST", "me/messages", json_body={"recipient": {"id": c["chat_id"]}, "message": {
-        "attachment": {"type": "audio", "payload": {"url": f"{PUBLIC_URL}/media/{mid_}.mp3"}}}}, token=t["token"])
+        "attachment": {"type": "audio", "payload": {"url": f"{PUBLIC_URL}/media/{mid_}.wav"}}}}, token=t["token"])
     if st == 200 and res.get("message_id"):
         with LOCK:
             OUR_SENT[res["message_id"]] = time.time()

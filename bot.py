@@ -135,7 +135,19 @@ SYSTEM_PROMPT = """Ты — вежливый, тёплый менеджер по
 9. Просит живого человека, жалуется, сложный технический вопрос — «подключаю менеджера», action="handoff".
 10. Посторонние вопросы и шутки — естественно, 1 фразой, с улыбкой. «Ты бот?» — честно: ИИ-помощник компании, можешь подключить менеджера.
 
+НОМЕР ТЕЛЕФОНА — БЕЗ НАВЯЗЧИВОСТИ
+- Проси номер только когда клиент проявил интерес: обсуждает услугу/цену, согласен на звонок или сам просит связаться.
+- Не проси номер два ответа подряд. Не проси номер после «нет», «не нужно», «kerakmas», «подумаю», «потом», «keyin» — тогда тепло попрощайся и скажи, что можно писать в любое время.
+- Не обещай звонок «сейчас/прямо сейчас»: «в ближайшее время» или в то время, которое назвал клиент.
+
+ЦЕНЫ — СТРОГО ПО БАЗЕ (не путай!)
+- лендинг $290 · сайт средней сложности $590 · корпоративный сайт $1090 · CRM $990 · ERP $1990 · мобильное приложение $4490 · AI-агент: подписка $99/мес, выкуп $1490.
+- Спросили цену — назови её в этом же ответе (даже в первом ответе — в третьем сообщении).
+- Выкуп агента ($1490) — БЕЗ ежемесячной подписки: дальше платят только за AI-модель и сервер по факту.
+- Функции, которых нет в базе (напоминания о днях рождения, интеграция с конкретной программой и т.п.), не подтверждай: «это менеджер уточнит под ваш процесс».
+
 ЗАПРЕТЫ
+- Каждое сообщение — отдельный элемент массива messages, без переносов строк внутри.
 - Только факты и цены из БАЗЫ. Никаких выдуманных цифр: диапазонов цен, стоимости сервера/API, «в 10 раз», процентов, сроков в днях (кроме «лендинг — обычно несколько дней»), скидок, акций, рассрочки, гарантий, кейсов. Числа клиента (бюджет, время звонка, кол-во сотрудников) повторять можно.
 
 ФОРМАТ — только один JSON-объект:
@@ -431,7 +443,7 @@ def deliver_voice(c, parts, script):
     if not STT.tts_enabled() or not parts:
         return False
     text = " ".join(to_lat(p) if script.startswith("uz") else p for p in parts)
-    audio = STT.tts(text, "ru" if script == "ru" else "uz")
+    audio = STT.tts(text, "ru" if script == "ru" else "uz", wav=c.get("channel") == "ig")
     if not audio:
         return False
     if c.get("channel") == "ig":
@@ -836,6 +848,36 @@ def client_numbers(history):
     return nums
 
 
+PRICE_RULES = [   # (mahsulot so'zlari, to'g'ri narxlar)
+    (r"(?i)(landing|лендинг|bir sahifali|bitta sahifali|бир саҳифали|битта саҳифали|одностранич)", {"290"}),
+    (r"(?i)(korporativ|корпоратив)", {"1090"}),
+    (r"(?i)(o'rta|ўрта|средн)", {"590"}),
+    (r"(?i)\bCRM", {"990"}),
+    (r"(?i)\bERP", {"1990"}),
+    (r"(?i)(ilova|илова|приложени|mobil|мобил)", {"4490"}),
+]
+ALL_PRICES = {"290", "590", "1090", "990", "1990", "4490", "99", "1490"}
+
+
+def wrong_prices(text):
+    """Bir gapda mahsulot va boshqa mahsulotning narxi bo'lsa — xato"""
+    bad = []
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        prices = set(re.findall(r"\$\s?(\d{2,5})|(\d{2,5})\s?(?:\$|dollar|доллар)", sent))
+        prices = {a or b for a, b in prices} & ALL_PRICES
+        if not prices:
+            continue
+        for pat, ok in PRICE_RULES:
+            if re.search(pat, sent) and not (prices & ok):
+                bad.append((re.search(pat, sent).group(0), sorted(ok)[0], sorted(prices)[0]))
+    return bad
+
+
+ASK_PHONE = re.compile(r"(?i)(raqam|рақам|номер|telefon[a-z]* raqam|телефон)")
+REFUSAL = re.compile(r"(?i)(kerakmas|керакмас|kerak emas|керак эмас|не нужно|не надо|не готовы|не потянем|"
+                     r"yo'?q rahmat|йук рахмат|нет,? спасибо|keyinroq|кейинрок|keyin|кейин|потом|подумаю|o'?ylab ko'?ray|уйлаб курай)")
+
+
 def bad_numbers(text, history):
     allowed = ALLOWED_NUMS | client_numbers(history)
     t = PHONE_RE.sub(" ", text)
@@ -981,7 +1023,14 @@ def generate_reply(c, script, model=None):
                 d = {"messages": [], "readiness": c.get("readiness", 0)}
             else:
                 d = {"messages": [p for p in re.split(r"\n\s*\n", raw) if p.strip()], "readiness": c.get("readiness", 0)}
-        raw_msgs = [clean_text(str(m)) for m in (d.get("messages") or []) if str(m).strip()]
+        raw_msgs = []
+        for m in (d.get("messages") or []):
+            for part in re.split(r"\s*\n+\s*", str(m)):      # Haiku ba'zan ikki xabarni bittaga qo'shadi
+                if part.strip():
+                    raw_msgs.append(clean_text(part))
+        limit = 3 if first else 2
+        if len(raw_msgs) > limit:
+            raw_msgs = raw_msgs[:limit - 1] + [" ".join(raw_msgs[limit - 1:])]
         raw_msgs = [m for m in raw_msgs if m and not looks_like_service_text(m)]
         d["_raw"] = raw_msgs
         out = [render(m, script) for m in raw_msgs]
@@ -1001,6 +1050,15 @@ def generate_reply(c, script, model=None):
             problems.append("Первый ответ — 3 коротких сообщения: приветствие, как дела, уточнение.")
         if not out:
             problems.append("Ответ не распознан. Верни строго один валидный JSON-объект без лишнего текста.")
+        wp = wrong_prices(" ".join(raw_msgs))
+        if wp:
+            problems.append("Неверная цена: " + "; ".join(f"«{w}» стоит от ${p}, а не ${x}" for w, p, x in wp) + ".")
+        last_bot = " ".join(h["t"] for h in c["history"][-4:] if h["r"] == "a")
+        last_client = " ".join(h["t"] for h in c["history"][-3:] if h["r"] == "u")
+        asks_now = any(ASK_PHONE.search(m) and "?" in m or re.search(r"(?i)(qoldir|қолдир|оставь|оставит|напишите номер)", m) for m in raw_msgs)
+        has_phone = bool(PHONE_RE.search(" ".join(h["t"] for h in c["history"] if h["r"] == "u")))
+        if asks_now and not has_phone and (ASK_PHONE.search(last_bot) or REFUSAL.search(last_client)):
+            problems.append("Не проси номер телефона снова — клиент отказался или ты уже просил. Ответь по сути или тепло попрощайся.")
         if script.startswith("uz") and re.search(r"(?i)\b(дорого|короче|скидка|просто|конечно|хорошо)\b", " ".join(raw_msgs)):
             problems.append("В узбекском ответе русские слова. Пиши только по-узбекски латиницей.")
         if best is None or len(problems) < best[0]:
@@ -1387,10 +1445,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if IG.handle_get(self):
             return
-        if self.path.startswith("/media/") and self.path.endswith(".mp3"):
-            item = MEDIA.get(self.path[7:-4])
+        if self.path.startswith("/media/") and self.path.split("?")[0].endswith((".mp3", ".wav")):
+            name = self.path.split("?")[0][7:]
+            item = MEDIA.get(name[:-4])
             if item:
-                IG.respond_html(self, 200, item[0], ctype="audio/mpeg")
+                IG.respond_html(self, 200, item[0], ctype="audio/wav" if name.endswith(".wav") else "audio/mpeg")
             else:
                 IG.respond_html(self, 404, "not found", ctype="text/plain")
             return

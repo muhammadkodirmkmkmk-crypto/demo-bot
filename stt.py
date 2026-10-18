@@ -126,12 +126,19 @@ def _first_voice():
     return _VOICE_CACHE["id"]
 
 
-def _tts_call(text, voice, model, lang):
+def pcm_to_wav(pcm, rate=16000):
+    """16-bit mono PCM -> WAV (Instagram mp3 ni qabul qilmaydi)"""
+    import struct
+    return (b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt " +
+            struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(pcm)) + pcm)
+
+
+def _tts_call(text, voice, model, lang, fmt=None):
     body = {"text": text, "model_id": model}
     if lang and model != "eleven_multilingual_v2":
         body["language_code"] = lang
     req = urllib.request.Request(
-        f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format={TTS_FORMAT}",
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format={fmt or TTS_FORMAT}",
         data=json.dumps(body).encode(), method="POST",
         headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"})
     try:
@@ -149,16 +156,17 @@ def _tts_call(text, voice, model, lang):
         return 0, b""
 
 
-def tts(text, lang="uz"):
-    """Matnni mp3 ovozga aylantiradi. Xato bo'lsa — b''"""
+def tts(text, lang="uz", wav=False):
+    """Matnni ovozga aylantiradi: mp3 (Telegram) yoki wav (Instagram). Xato bo'lsa — b''"""
     if not tts_enabled() or not text.strip():
         return b""
+    fmt = "pcm_16000" if wav else None
     voice = TTS_VOICE
-    st, audio = _tts_call(text, voice, TTS_MODEL, lang)
+    st, audio = _tts_call(text, voice, TTS_MODEL, lang, fmt)
     if st in (400, 404) and not audio:
         alt = _first_voice()
         if alt and alt != voice:
-            st, audio = _tts_call(text, alt, TTS_MODEL, lang)
+            st, audio = _tts_call(text, alt, TTS_MODEL, lang, fmt)
     if not audio and lang == "ru":
-        st, audio = _tts_call(text, _VOICE_CACHE["id"] or voice, "eleven_multilingual_v2", None)
-    return audio
+        st, audio = _tts_call(text, _VOICE_CACHE["id"] or voice, "eleven_multilingual_v2", None, fmt)
+    return pcm_to_wav(audio) if (wav and audio) else audio
