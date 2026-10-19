@@ -16,13 +16,12 @@ MAX_RULES = 40
 _S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "notify": "all", "digest_day": "", "voice": "",
       "voice_id": "", "voice_name": "", "prev_voice": None, "voice_list": []}
 KEYS = ("rules", "hist", "rmap", "test", "notify", "digest_day", "voice", "voice_id", "voice_name", "prev_voice", "voice_list")
-VOICE_MODES = {"creative": (0.0, "🎭 Живой (Creative) — максимум эмоций и интонаций, иногда может «переигрывать»"),
-               "natural": (0.5, "🙂 Естественный (Natural) — как обычная речь, сбалансированно"),
-               "robust": (1.0, "🧊 Ровный (Robust) — стабильно, но монотонно")}
-VOICE_SAMPLE = {"uz": "[warmly] Assalomu alaykum, Aziz aka! Xo'sh… saytni qaysi biznes uchun o'ylayapsiz? "
-                      "[cheerfully] Zo'r-da! Narxini pastda yozib qo'ydim.",
-                "ru": "[warmly] Здравствуйте, Азиз! Так… сайт для какого бизнеса планируете? "
-                      "[cheerfully] Отлично! Цену написал вам ниже сообщением."}
+VOICE_MODES = {"lively": (0.5, "🙂 Живой (Stability 0.5) — эмоционально, как в обычных роликах"),
+               "calm": (0.75, "🧘 Спокойный (Stability 0.75) — ровно и уверенно")}
+VOICE_SAMPLE = {"uz": "Assalomu alaykum, Aziz aka, xabaringiz uchun katta rahmat. Sayt qaysi biznes uchun kerakligini aytsangiz, "
+                      "sizga eng mos variantni tanlab beraman. AI agent esa Instagram'da va Telegram'da mijozlarga 24/7 javob beradi.",
+                "ru": "Здравствуйте, Азиз, спасибо, что написали. Расскажите, для какого бизнеса нужен сайт, "
+                      "и я подберу самый подходящий вариант. Цену написал вам ниже сообщением."}
 
 BOSS_PROMPT = """Ты — ИИ-продавец компании AI Business UZ. Сейчас ты пишешь не клиенту, а своему руководителю (владельцу компании) в Telegram.
 Ты его сотрудник: докладываешь по делу, коротко и честно, по-русски, без воды и без markdown-заголовков. Можно короткие списки через «•».
@@ -191,7 +190,7 @@ def set_voice(vid, name, prev=None):
 
 def send_voice_sample(chat_id):
     for lang in ("uz", "ru"):
-        audio = core.STT.tts(VOICE_SAMPLE[lang], lang)
+        audio = core.STT.tts(core.voice_text(VOICE_SAMPLE[lang], "uz_lat" if lang == "uz" else "ru"), lang)
         if audio:
             core.tg_send_voice(chat_id, audio)
         else:
@@ -207,6 +206,14 @@ def on_callback(cq):
     if data.startswith("v:") and is_admin_chat(chat_id):
         core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Меняю голос…"})
         command(chat_id, "/voice " + data[2:])
+        return True
+    if data.startswith("r:") and is_admin_chat(chat_id):
+        _, how, sid = (data.split(":", 2) + ["", ""])[:3]
+        key = key_by_short(sid)
+        if key:
+            ts = snooze(key, how)
+            core.tg("answerCallbackQuery", {"callback_query_id": cq["id"],
+                                            "text": "⏰ Напомню " + datetime.fromtimestamp(ts, core.TZ).strftime("%d.%m %H:%M")})
         return True
     if data.startswith("vp:") and is_admin_chat(chat_id):
         _load()
@@ -364,7 +371,7 @@ def command(chat_id, text):
             _S["voice"] = mode
             core.STT.TTS_STABILITY = VOICE_MODES[mode][0]
             _save()
-        cur = next((m for m, v in VOICE_MODES.items() if v[0] == core.STT.TTS_STABILITY), "natural")
+        cur = next((m for m, v in VOICE_MODES.items() if v[0] == core.STT.TTS_STABILITY), "lively")
         core.tg("sendMessage", {"chat_id": chat_id, "text": "Голос бота сейчас: " + VOICE_MODES[cur][1] +
                                 "\n\nНиже — пример, как он звучит. Сменить:",
                                 "reply_markup": {"inline_keyboard": [[{"text": ("✅ " if m == cur else "") + m.capitalize(),
@@ -404,8 +411,57 @@ def send_digest():
                             "reply_markup": {"inline_keyboard": [[{"text": "📊 Панель", "web_app": {"url": core.ADMIN.panel_url()}}]]}})
 
 
+def check_reminders():
+    """Muddati kelgan qo'ng'iroq eslatmalari — admin'ga xabar (raqam + izoh + tugmalar)"""
+    now = time.time()
+    with core.LOCK:
+        due = [(k, c) for k, c in core.STATE["chats"].items()
+               if (c.get("remind") or {}).get("ts") and not c["remind"].get("sent") and not c["remind"].get("done")
+               and c["remind"]["ts"] <= now]
+    for key, c in due:
+        f = c.get("facts") or {}
+        tel, pretty = core.ADMIN.fmt_phone(f.get("phone", ""))
+        who = c.get("name") or "Клиент"
+        if c.get("username"):
+            who += " @" + c["username"]
+        want = f.get("need") or f.get("note") or f.get("business") or ""
+        lines = [f"⏰ Напоминание: позвонить", f"👤 {who}"]
+        if pretty:
+            lines.append(f"📞 {pretty}")
+        if c["remind"].get("text"):
+            lines.append(f"💬 {c['remind']['text']}")
+        if want:
+            lines.append(f"🎯 {want[:160]}")
+        s = short_id(key)
+        kb = card_buttons(key)["inline_keyboard"] + [[{"text": "⏰ +1 час", "callback_data": "r:60:" + s},
+                                                      {"text": "⏰ Завтра 10:00", "callback_data": "r:tm:" + s}]]
+        res = core.tg("sendMessage", {"chat_id": core.REPORT_CHAT_ID, "text": "\n".join(lines), "reply_markup": {"inline_keyboard": kb}})
+        mid = (res.get("result") or {}).get("message_id")
+        if mid:
+            remember_card(mid, key)
+        with core.LOCK:
+            c["remind"]["sent"] = True
+        core.save_chat(key)
+
+
+def snooze(key, how):
+    from datetime import timedelta
+    if how == "tm":
+        t = datetime.now(core.TZ) + timedelta(days=1)
+        ts = t.replace(hour=10, minute=0, second=0, microsecond=0).timestamp()
+    else:
+        ts = time.time() + int(how) * 60
+    old = (core.STATE["chats"].get(key, {}).get("remind") or {}).get("text", "")
+    core.ADMIN.set_remind(key, ts, old)
+    return ts
+
+
 def maybe_digest():
-    """Har kuni 21:00 (Toshkent) — kunlik hisobot"""
+    """Har kuni 21:00 (Toshkent) — kunlik hisobot; eslatmalarni tekshirish (har daqiqa)"""
+    try:
+        check_reminders()
+    except Exception as e:
+        print("Reminders error:", e)
     _load()
     now = datetime.now(core.TZ)
     day = now.strftime("%Y-%m-%d")

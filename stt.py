@@ -117,12 +117,15 @@ VOICE_REPLIES = os.environ.get("VOICE_REPLIES", "1") != "0"
 TTS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()        # aniq ID berilsa — shu
 TTS_VOICE_NAME = os.environ.get("ELEVENLABS_VOICE_NAME", "Bekzod").strip()  # aks holda nomi bo'yicha topiladi
 DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"
-TTS_MODEL = os.environ.get("TTS_MODEL", "eleven_v3")          # o'zbek tili faqat v3 da
+TTS_MODEL = os.environ.get("TTS_MODEL", "eleven_v4")          # o'zbek tili: v4 (ishlamasa v3)
+TTS_FALLBACK_MODEL = "eleven_v3"
 TTS_FORMAT = os.environ.get("TTS_FORMAT", "mp3_44100_64")
 # Ovoz jonliligi: stability 0.0 — eng emotsional, 0.5 — tabiiy, 1.0 — bir xil
 TTS_STABILITY = float(os.environ.get("TTS_STABILITY", "0.5"))
 TTS_SIMILARITY = float(os.environ.get("TTS_SIMILARITY", "0.8"))
+TTS_STYLE = float(os.environ.get("TTS_STYLE", "0"))
 _NO_SETTINGS = {}
+_NO_LANG = {}
 _VOICE_CACHE = {"id": None, "resolved": None}
 
 
@@ -196,9 +199,11 @@ def pcm_to_wav(pcm, rate=16000):
 
 
 def _tts_call(text, voice, model, lang, fmt=None):
-    body = {"text": text, "model_id": model}   # til matndan avtomatik aniqlanadi (v3 "uz" kodini qabul qilmaydi)
+    body = {"text": text, "model_id": model}
+    if lang and model != "eleven_v3" and not _NO_LANG.get(model):
+        body["language_code"] = lang              # v4: tilni aniq ko'rsatamiz (v3 "uz" ni qabul qilmaydi)
     if not _NO_SETTINGS.get(model):
-        body["voice_settings"] = {"stability": TTS_STABILITY, "similarity_boost": TTS_SIMILARITY}
+        body["voice_settings"] = {"stability": TTS_STABILITY, "similarity_boost": TTS_SIMILARITY, "style": TTS_STYLE}
     req = urllib.request.Request(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format={fmt or TTS_FORMAT}",
         data=json.dumps(body).encode(), method="POST",
@@ -212,7 +217,11 @@ def _tts_call(text, voice, model, lang, fmt=None):
         except Exception:
             detail = ""
         print("TTS error:", model, voice, e.code, detail)
-        if e.code in (400, 422) and "voice_settings" in body and ("stability" in detail or "voice_settings" in detail):
+        if e.code in (400, 422) and "language_code" in body and "language" in detail:
+            _NO_LANG[model] = True              # til kodi qabul qilinmadi — tilsiz qayta
+            return _tts_call(text, voice, model, lang, fmt)
+        if e.code in (400, 422) and "voice_settings" in body and ("stability" in detail or "voice_settings" in detail
+                                                                   or "style" in detail):
             _NO_SETTINGS[model] = True          # bu model sozlamani qabul qilmaydi — sozlamasiz qayta
             return _tts_call(text, voice, model, lang, fmt)
         return e.code, b""
@@ -228,6 +237,8 @@ def tts(text, lang="uz", wav=False):
     fmt = "pcm_16000" if wav else None
     voice = resolve_voice()
     st, audio = _tts_call(text, voice, TTS_MODEL, lang, fmt)
+    if not audio and st in (400, 404, 422) and TTS_MODEL != TTS_FALLBACK_MODEL:
+        st, audio = _tts_call(text, voice, TTS_FALLBACK_MODEL, lang, fmt)   # v4 ishlamasa — v3
     if st in (400, 404) and not audio:
         alt = _first_voice()
         if alt and alt != voice:

@@ -300,7 +300,7 @@ def load_state():
     global STATE
     if db_connect() is not None:
         try:
-            rows = DB.run("SELECT k, v FROM demo_bot_state WHERE updated > now() - interval '30 days'")
+            rows = DB.run("SELECT k, v FROM demo_bot_state WHERE updated > now() - interval '365 days'")
             for k, v in rows:
                 if k.startswith("chat:"):
                     STATE["chats"][k[5:]] = json.loads(v)
@@ -478,6 +478,7 @@ def deliver_voice(c, parts, script, spoken=""):
         return False          # javob faqat raqamlardan iborat — matn bilan yuboriladi
     if script.startswith("uz"):
         text = to_lat(text)
+    text = voice_text(text, script)
     audio = STT.tts(text, "ru" if script == "ru" else "uz", wav=c.get("channel") == "ig")
     if not audio:
         return False
@@ -506,6 +507,8 @@ def chat_channel(c):
         return "eval"
     if c.get("channel") == "ig":
         return "ig"
+    if c.get("channel") == "manual":
+        return "manual"
     if not c.get("bc_id") and str(c.get("chat_id")) == str(REPORT_CHAT_ID):
         return "test"
     return "tg"
@@ -884,6 +887,39 @@ def to_cyr(text):
     return LAT_WORD_RE.sub(rep, text)
 
 
+# Ovoz uchun matn (Bekzod qo'llanmasi): kirill, inglizcha so'zlar talaffuz bo'yicha, bitta intonatsiya tegi boshida
+SPEAK_WORDS = [  # (regex, o'zbekcha, ruscha)
+    (r"businessai\.uz", "бизнес эй-ай нуқта уз", "бизнес эй-ай точка уз"),
+    (r"AI", "эй-ай", "эй-ай"), (r"CRM", "си-ар-эм", "си-ар-эм"), (r"ERP", "и-ар-пи", "и-ар-пи"),
+    (r"API", "эй-пи-ай", "эй-пи-ай"), (r"SMM", "эс-эм-эм", "эс-эм-эм"), (r"SEO", "сео", "сео"), (r"IT", "ай-ти", "ай-ти"),
+    (r"1[CС]", "бир-эс", "один-эс"), (r"iOS", "ай-о-эс", "ай-о-эс"),
+    (r"(?i:instagram)", "инстаграм", "инстаграм"), (r"(?i:telegram)", "телеграм", "телеграм"),
+    (r"(?i:direct)", "директ", "директ"), (r"(?i:excel)", "эксель", "эксель"), (r"(?i:google)", "гугл", "гугл"),
+    (r"(?i:whatsapp)", "ватсап", "ватсап"), (r"(?i:android)", "андроид", "андроид"), (r"(?i:online)", "онлайн", "онлайн"),
+    (r"(?i:landing)", "лендинг", "лендинг"), (r"(?i:mini ?app)", "мини-апп", "мини-апп"),
+]
+VOICE_TAG_UZ = {"calm": "[аниқ, шошмасдан]", "warm": "[илиқ, самимий]"}
+VOICE_TAG_RU = {"calm": "[спокойно, уверенно]", "warm": "[тепло, дружелюбно]"}
+
+
+def voice_text(text, script):
+    """Ovozga beriladigan matn: bitta teg boshida, kirill (o'zbekcha), talaffuz bo'yicha yozilgan so'zlar"""
+    tags = re.findall(r"\[([^\]]{2,40})\]", text)
+    t = re.sub(r"\s*\[[^\]]{2,40}\]\s*", " ", text)
+    t = re.sub(r"\b24\s*/\s*7\b", "yigirma to'rt soat, haftada yetti kun" if script.startswith("uz") else "круглосуточно, без выходных", t)
+    t = re.sub(r"\s*/\s*", ", ", t)                            # "/" — o'qilmaydi, vergul pauza
+    calm = any(re.search(r"(?i)calm|thought|аниқ|шошма|спокой|serious", x) for x in tags)
+    uz = script.startswith("uz")
+    for rx, uz_w, ru_w in SPEAK_WORDS:
+        t = re.sub(r"(?<![\w@.])" + rx + r"(?:['’‘`]?([A-Za-z]{1,8}))?(?!\w|\.\w)",
+                   lambda m: (uz_w if uz else ru_w) + (lat2cyr_word(m.group(1)) if m.group(1) else ""), t)
+    if uz:
+        t = to_cyr(t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    tag = (VOICE_TAG_UZ if uz else VOICE_TAG_RU)["calm" if calm else "warm"]
+    return f"{tag} {t}" if t else ""
+
+
 def to_lat(text):
     return re.sub(CYR_CLASS + "+", lambda m: cyr2lat_word(m.group(0)), text)
 
@@ -1091,12 +1127,14 @@ def generate_reply(c, script, model=None):
     dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode + BOSS.rules_block(c)
     if client_used_voice(c) and STT.tts_enabled():
         dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет озвучен и отправлен голосовым — не пиши, что умеешь только текстом.\n"
-                "Добавь в JSON поле \"voice\": то, что ты СКАЖЕШЬ голосом, — как живой менеджер-узбек в Telegram, а не диктор и не робот:\n"
-                "• разговорно и тепло, короткими фразами по 4–10 слов, 2–3 фразы, всего до 220 символов (узбекский — латиницей);\n"
-                "• живые слова в начале или по ходу: «Xo'sh…», «Ha, tushundim», «Aha», «Mana», «Ну смотрите», «Так, понял», «Отлично!» — по одному, к месту;\n"
-                "• разговорные частицы: -da, -ku, -chi, «albatta», «zo'r»; если знаешь имя клиента — обратись по имени;\n"
-                "• паузы многоточием «…» и запятыми, как в живой речи; без книжных и канцелярских слов;\n"
-                "• 1–2 тега интонации к месту: [warmly], [cheerfully], [friendly], [softly laughs], [thoughtful], [excited];\n"
+                "Добавь в JSON поле \"voice\": то, что ты СКАЖЕШЬ голосом, — тепло и по-человечески, как живой менеджер:\n"
+                "• 2–3 ПОЛНЫХ предложения по 8–15 слов (узбекский — латиницей, программа сама переведёт в кириллицу); "
+                "обрывки вроде «Narx. Tez. Oson.» звучат как робот — так не пиши;\n"
+                "• паузы — знаками: запятая — короткая, точка — средняя, многоточие «…» — длинная; знак «/» не используй;\n"
+                "• если знаешь имя клиента — обратись по имени; без канцелярита;\n"
+                "• ровно ОДИН тег интонации в самом начале: [warmly] — тепло, для приветствия и предложения, "
+                "или [calm] — чётко и без спешки, для объяснений. Больше тегов не ставь;\n"
+                "• числа, кроме цен, — словами: «24/7» → «yigirma to'rt soat, haftada yetti kun» / «круглосуточно, без выходных»;\n"
                 "• ЦЕНЫ, суммы, числа, номера телефонов, ссылки и @аккаунты НЕ произноси никак — ни цифрами, ни словами. "
                 "Они придут клиенту отдельным текстом. Если в ответе есть цена — скажи «narxini pastda yozib qo'ydim» / «цену написал вам ниже сообщением». "
                 "Сами цены оставь в messages.\n"
@@ -1205,7 +1243,7 @@ def send_report(c, title):
     lines = [f"<b>{esc(title)}</b> · {ADMIN.CH_NAMES.get(ch, '')}",
              "👤 " + (f'<a href="{esc(link)}">{esc(who)}</a>' if link else esc(who))]
     if f.get("phone"):
-        lines.append(f"📞 {f['phone']}" + (f" · ⏰ {_cut(f['call_time'], 40)}" if f.get("call_time") else ""))
+        lines.append(f"📞 {ADMIN.fmt_phone(f['phone'])[1]}" + (f" · ⏰ {_cut(f['call_time'], 40)}" if f.get("call_time") else ""))
     if f.get("business") or f.get("need"):
         lines.append("🎯 " + " — ".join(_cut(x, 90) for x in (f.get("business"), f.get("need")) if x))
     if f.get("offer") or f.get("budget"):

@@ -24,7 +24,111 @@ STT_INCLUDED_HOURS = float(os.environ.get("STT_INCLUDED_HOURS", "6.1"))   # Crea
 STT_EXTRA_PER_HOUR = float(os.environ.get("STT_EXTRA_PER_HOUR", "0.22"))
 SERVER_USD = float(os.environ.get("SERVER_USD", "5"))
 CHANNELS = ("tg", "ig")
-CH_NAMES = {"tg": "Telegram", "ig": "Instagram", "test": "Ваши тесты", "eval": "Проверки /eval", "other": "Без канала"}
+CH_NAMES = {"tg": "Telegram", "ig": "Instagram", "manual": "Вручную", "test": "Ваши тесты", "eval": "Проверки /eval",
+            "other": "Без канала"}
+CRM_CH = ("tg", "ig", "manual")
+PIPE = [("dialog", "Диалог с ботом"), ("new", "Новый лид"), ("work", "В работе"), ("offer", "Предложение"),
+        ("pay", "Ждёт оплаты"), ("won", "Купил"), ("lost", "Отказ")]
+EDIT_FIELDS = ("name", "phone", "business", "need", "budget", "call_time", "offer")
+EXP_CATS = [("ads_ig", "Таргет Instagram", "ig"), ("ads_tg", "Реклама Telegram", "tg"), ("ads_other", "Другая реклама", ""),
+            ("services", "Сервисы и подписки", ""), ("people", "Зарплата / фриланс", ""), ("other", "Прочее", "")]
+_EXP = {"loaded": False, "items": []}
+
+
+def expenses():
+    if not _EXP["loaded"]:
+        _EXP["loaded"] = True
+        _EXP["items"] = core.db_get("admin:expenses") or []
+    return _EXP["items"]
+
+
+def add_expense(d):
+    cats = {c[0]: c for c in EXP_CATS}
+    cat = d.get("cat") if d.get("cat") in cats else "other"
+    try:
+        amount = round(float(d.get("amount") or 0), 2)
+        ts = float(d.get("ts") or time.time())
+    except Exception:
+        return False
+    if amount <= 0:
+        return False
+    item = {"id": hashlib.sha1(f"{time.time()}{amount}{len(expenses())}".encode()).hexdigest()[:10], "rec": d.get("rec", ""), "ts": ts, "cat": cat, "ch": cats[cat][2], "amount": amount,
+            "note": str(d.get("note") or "")[:300], "created": time.time()}
+    with core.LOCK:
+        expenses().append(item)
+        items = list(_EXP["items"])
+    core.db_put("admin:expenses", items)
+    return True
+
+
+_REC = {"loaded": False, "items": []}
+
+
+def recurring():
+    if not _REC["loaded"]:
+        _REC["loaded"] = True
+        _REC["items"] = core.db_get("admin:recurring") or []
+    return _REC["items"]
+
+
+def add_recurring(d):
+    """Har kunlik xarajat (masalan, target $15/kun): bugundan boshlab har kuni avtomatik yoziladi"""
+    cats = {c[0] for c in EXP_CATS}
+    try:
+        amount = round(float(d.get("amount") or 0), 2)
+    except Exception:
+        return False
+    if amount <= 0:
+        return False
+    since = d.get("since") or datetime.now(core.TZ).strftime("%Y-%m-%d")
+    rule = {"id": hashlib.sha1(f"r{time.time()}{amount}".encode()).hexdigest()[:10], "cat": d.get("cat") if d.get("cat") in cats else "ads_ig",
+            "amount": amount, "note": str(d.get("note") or "")[:200], "since": since, "last": "", "active": True}
+    with core.LOCK:
+        recurring().append(rule)
+    core.db_put("admin:recurring", recurring())
+    apply_recurring()
+    return True
+
+
+def stop_recurring(rid):
+    with core.LOCK:
+        for r in recurring():
+            if r["id"] == str(rid):
+                r["active"] = False
+    core.db_put("admin:recurring", recurring())
+    return True
+
+
+def apply_recurring():
+    """Har bir faol qoida uchun yozilmagan kunlarni (bugungacha) xarajatga qo'shadi"""
+    today = datetime.now(core.TZ).date()
+    changed = False
+    for r in list(recurring()):
+        if not r.get("active"):
+            continue
+        day = datetime.strptime(r["last"] or r["since"], "%Y-%m-%d").date()
+        if r["last"]:
+            day += timedelta(days=1)
+        n = 0
+        while day <= today and n < 400:
+            ts = datetime(day.year, day.month, day.day, 12, tzinfo=core.TZ).timestamp()
+            add_expense({"cat": r["cat"], "amount": r["amount"], "ts": ts, "note": (r["note"] or "") + " · ежедневно",
+                         "rec": r["id"]})
+            r["last"] = day.strftime("%Y-%m-%d")
+            day += timedelta(days=1)
+            n += 1
+            changed = True
+    if changed:
+        core.db_put("admin:recurring", recurring())
+
+
+def del_expense(eid):
+    with core.LOCK:
+        n = len(expenses())
+        _EXP["items"] = [x for x in _EXP["items"] if x["id"] != str(eid)]
+        items, ok = list(_EXP["items"]), len(_EXP["items"]) < n
+    core.db_put("admin:expenses", items)
+    return ok
 _SUB = {"t": 0, "v": None}
 
 
@@ -251,7 +355,32 @@ def build(period="30d"):
     total_dialogs = sum(proc[c]["dialogs"] for c in CHANNELS)
     total_leads = sum(funnel[c]["lead"] for c in CHANNELS)
     total_won = sum(funnel[c]["won"] for c in CHANNELS)
-    spend = ai_total + tts_usd + stt_extra + server
+    # --- qo'lda kiritilgan xarajatlar (reklama va b.)
+    try:
+        apply_recurring()
+    except Exception as e:
+        print("Recurring error:", e)
+    end_ts = datetime.strptime(days[-1], "%Y-%m-%d").replace(tzinfo=core.TZ).timestamp() + 86400
+    with core.LOCK:
+        exp = [dict(x) for x in expenses() if start <= x["ts"] < end_ts]
+    exp.sort(key=lambda x: -x["ts"])
+    manual = round(sum(x["amount"] for x in exp), 2)
+    by_cat = {c[0]: round(sum(x["amount"] for x in exp if x["cat"] == c[0]), 2) for c in EXP_CATS}
+    ads = {ch: round(sum(x["amount"] for x in exp if x["ch"] == ch and x["cat"].startswith("ads")), 2) for ch in CHANNELS}
+    spend_auto = ai_total + tts_usd + stt_extra + server
+    spend = spend_auto + manual
+    econ = {}
+    for ch in CHANNELS:
+        bot_usd = costs[ch]["ai"] + costs[ch]["tts_usd"]
+        total = ads[ch] + bot_usd
+        f = funnel[ch]
+        rev = proc[ch]["revenue"]
+        econ[ch] = {"ads": ads[ch], "bot": round(bot_usd, 2), "total": round(total, 2), "dialogs": proc[ch]["dialogs"],
+                    "leads": f["lead"], "won": f["won"], "revenue": round(rev, 2),
+                    "per_dialog": round(total / proc[ch]["dialogs"], 2) if proc[ch]["dialogs"] else 0,
+                    "per_lead": round(total / f["lead"], 2) if f["lead"] else 0,
+                    "per_sale": round(total / f["won"], 2) if f["won"] else 0,
+                    "romi": round((rev - total) / total * 100) if total else None}
     return {
         "period": period, "days": days, "generated": time.time(),
         "costs": costs, "ai_total": round(ai_total, 4), "tts_usd": round(tts_usd, 2), "stt_min": round(stt_min, 1),
@@ -259,6 +388,8 @@ def build(period="30d"):
         "eleven": {"sub": sub, "plan_usd": ELEVEN_PLAN_USD, "credits_limit": credits_limit,
                    "stt_included_h": STT_INCLUDED_HOURS},
         "funnel_steps": FUNNEL, "funnel": funnel, "proc": proc, "events": ev,
+        "expenses": exp, "manual": manual, "recurring": [r for r in recurring() if r.get("active")], "by_cat": by_cat, "exp_cats": EXP_CATS, "econ": econ, "spend_auto": round(spend_auto, 2),
+        "profit": round(revenue - spend, 2), "romi": round((revenue - spend) / spend * 100) if spend else None,
         "totals": {"dialogs": total_dialogs, "leads": total_leads, "won": total_won, "revenue": round(revenue, 2),
                    "per_dialog": round(spend / total_dialogs, 4) if total_dialogs else 0,
                    "per_lead": round(spend / total_leads, 2) if total_leads else 0,
@@ -266,7 +397,7 @@ def build(period="30d"):
         "daily": [{"d": d, **daily[d], "cost": round(core.usage_cost(usage[d]) + sum(
             s.get("tts_chars", 0) for s in stats[d].values()) * usd_per_credit, 3)} for d in days],
         "business": sorted(biz.items(), key=lambda x: -x[1])[:8],
-        "leads": leads[:150], "ch_names": CH_NAMES, "calls": calls,
+        "leads": leads[:150], "ch_names": CH_NAMES, "calls": calls, "crm": crm_list(chats), "pipe": PIPE,
     }
 
 
@@ -276,11 +407,21 @@ def chat_link(c):
     return "tg://user?id=" + str(c.get("chat_id")) if c.get("chat_id") else ""
 
 
+def fmt_phone(p):
+    """+998 90 441 76 34 ko'rinishi; tel: havola uchun raqamlar"""
+    d = "".join(ch for ch in str(p or "") if ch.isdigit())
+    if len(d) == 9:
+        d = "998" + d
+    if len(d) == 12 and d.startswith("998"):
+        return "+" + d, f"+998 {d[3:5]} {d[5:8]} {d[8:10]} {d[10:12]}"
+    return ("+" + d if d else ""), (p or "")
+
+
 def call_list(chats):
     """Kimga qo'ng'iroq qilish kerak: telefon qoldirganlar (barcha vaqt)"""
     out = []
     for key, c in chats.items():
-        if core.chat_channel(c) not in CHANNELS:
+        if core.chat_channel(c) not in CRM_CH:
             continue
         f = c.get("facts") or {}
         phone = f.get("phone") or ""
@@ -288,19 +429,165 @@ def call_list(chats):
             continue
         deal = (c.get("deal") or {}).get("status")
         called = (c.get("call") or {}).get("status") == "done"
+        rm = c.get("remind") or {}
+        rm_active = bool(rm.get("ts")) and not rm.get("done")
+        rm_due = rm_active and rm["ts"] <= time.time()
+        tel, pretty = fmt_phone(phone)
         want = "; ".join(x for x in [f.get("need"), f.get("offer") and "предложено: " + f["offer"]] if x) or \
             f.get("note") or f.get("business") or "—"
         who = c.get("name") or "—"
         if c.get("username"):
             who += " @" + c["username"]
-        out.append({"key": key, "ch": core.chat_channel(c), "who": who, "phone": phone, "want": want,
+        out.append({"key": key, "ch": core.chat_channel(c), "who": who, "phone": pretty, "tel": tel, "want": want,
+                    "remind_ts": rm.get("ts", 0) if rm_active else 0, "remind_text": rm.get("text", "") if rm_active else "",
+                    "remind_due": rm_due,
                     "business": f.get("business", ""), "call_time": f.get("call_time", ""), "note": f.get("note", ""),
                     "budget": f.get("budget", ""), "objection": f.get("objection", ""),
                     "readiness": int(c.get("readiness") or 0), "ts": c.get("lead_ts") or chat_first_ts(c),
                     "called": called, "called_ts": (c.get("call") or {}).get("ts", 0), "deal": deal or "",
-                    "todo": not called and deal not in ("won", "lost"), "link": chat_link(c)})
-    out.sort(key=lambda x: (not x["todo"], -x["ts"]))
+                    "todo": deal not in ("won", "lost") and (not called or rm_due), "link": chat_link(c)})
+    out.sort(key=lambda x: (not x["todo"], not x["remind_due"], -x["ts"]))
     return out[:100]
+
+
+def pipe_stage(c):
+    deal = (c.get("deal") or {}).get("status")
+    if deal in ("won", "lost"):
+        return deal
+    if c.get("stage") in dict(PIPE):
+        return c["stage"]
+    if (c.get("call") or {}).get("status") == "done":
+        return "work"
+    f = c.get("facts") or {}
+    if f.get("phone") or c.get("lead_sent") or c.get("hot_sent") or core.chat_channel(c) == "manual":
+        return "new"
+    return "dialog"
+
+
+def crm_list(chats):
+    """CRM: barcha mijozlar (davrdan qat'i nazar) — karta uchun to'liq ma'lumot"""
+    out = []
+    usd_per_credit = ELEVEN_PLAN_USD / max(1, ELEVEN_PLAN_CREDITS)
+    for key, c in chats.items():
+        ch = core.chat_channel(c)
+        if ch not in CRM_CH:
+            continue
+        hist = c.get("history", [])
+        if ch != "manual" and not any(h["r"] == "u" for h in hist):
+            continue
+        f = c.get("facts") or {}
+        tel, pretty = fmt_phone(f.get("phone", ""))
+        cc = c.get("cost") or {}
+        rm = c.get("remind") or {}
+        out.append({
+            "key": key, "ch": ch, "name": c.get("name") or f.get("name") or "", "username": c.get("username", ""),
+            "phone": pretty, "tel": tel, "facts": {k: f.get(k, "") for k in ("business", "need", "budget", "call_time", "offer",
+                                                                             "objection", "note", "current_tool")},
+            "stage": pipe_stage(c), "deal": c.get("deal") or {}, "readiness": int(c.get("readiness") or 0),
+            "first": chat_first_ts(c) or c.get("created", 0), "last": max([h.get("ts") or 0 for h in hist] or [c.get("created", 0)]),
+            "notes": (c.get("notes") or [])[-30:], "called": (c.get("call") or {}).get("status") == "done",
+            "remind_ts": rm.get("ts", 0) if rm.get("ts") and not rm.get("done") else 0, "remind_text": rm.get("text", ""),
+            "cost": round(cc.get("ai_usd", 0) + cc.get("tts_chars", 0) * usd_per_credit, 4), "link": chat_link(c),
+            "paused": (c.get("paused_until") or 0) > time.time(), "status": c.get("status", ""),
+            "tail": [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 ")[:400], "v": bool(h.get("voice")),
+                      "f": bool(h.get("f")), "h": bool(h.get("human"))} for h in hist[-14:]]})
+    out.sort(key=lambda x: -x["last"])
+    return out[:500]
+
+
+def update_client(key, d):
+    """Kartadan tahrirlash: maydonlar, bosqich, izoh"""
+    with core.LOCK:
+        c = core.STATE["chats"].get(key)
+        if c is None:
+            return False
+        f = c.setdefault("facts", {})
+        for k, v in (d.get("fields") or {}).items():
+            if k in EDIT_FIELDS:
+                v = str(v or "").strip()[:300]
+                if k == "name":
+                    c["name"] = v
+                if v:
+                    f[k] = v
+                else:
+                    f.pop(k, None)
+        st = d.get("stage")
+        if st in dict(PIPE):
+            if st in ("won", "lost"):
+                old = c.get("deal") or {}
+                c["deal"] = {"status": st, "amount": float(d.get("amount") or old.get("amount") or 0), "ts": time.time()}
+            else:
+                c.pop("deal", None)
+                c["stage"] = st
+        note = str(d.get("note") or "").strip()
+        if note:
+            c.setdefault("notes", []).append({"t": note[:1000], "ts": time.time()})
+    core.save_chat(key)
+    return True
+
+
+def new_client(d):
+    """Qo'lda mijoz qo'shish (telefon orqali kelgan, tanish va h.k.)"""
+    name = str(d.get("name") or "").strip()[:100]
+    phone = str(d.get("phone") or "").strip()[:40]
+    if not (name or phone):
+        return None
+    key = "manual:" + str(int(time.time() * 1000))
+    c = core.chat_state(key)
+    with core.LOCK:
+        c.update(channel="manual", name=name, created=time.time(), first_ts=time.time(), lead_sent=bool(phone), status="manual")
+        c["facts"].update({k: str(d.get(k) or "").strip()[:300] for k in ("phone", "business", "need", "budget") if d.get(k)})
+        if d.get("note"):
+            c["notes"] = [{"t": str(d["note"])[:1000], "ts": time.time()}]
+    core.save_chat(key)
+    return key
+
+
+def export_csv():
+    """Barcha mijozlar — CSV (Excel ochadi) admin chatiga fayl bo'lib keladi"""
+    import csv
+    import io
+    with core.LOCK:
+        chats = json.loads(json.dumps(core.STATE["chats"]))
+    rows = crm_list(chats)
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["Имя", "Username", "Телефон", "Канал", "Этап", "Сумма $", "Бизнес", "Что хочет", "Бюджет", "Удобное время",
+                "Готовность %", "Первое сообщение", "Последнее", "Заметки", "Расход $"])
+    fmt = lambda ts: datetime.fromtimestamp(ts, core.TZ).strftime("%d.%m.%Y %H:%M") if ts else ""
+    stages = dict(PIPE)
+    for x in rows:
+        f = x["facts"]
+        w.writerow([x["name"], x["username"], x["phone"], CH_NAMES.get(x["ch"], x["ch"]), stages.get(x["stage"], ""),
+                    x["deal"].get("amount", "") if x["stage"] == "won" else "", f["business"], f["need"], f["budget"],
+                    f["call_time"], x["readiness"], fmt(x["first"]), fmt(x["last"]),
+                    " | ".join(n["t"] for n in x["notes"]), x["cost"]])
+    data = ("\ufeff" + buf.getvalue()).encode("utf-8")
+    name = "clients_" + datetime.now(core.TZ).strftime("%Y-%m-%d") + ".csv"
+    body, ctype = core.STT._multipart({"chat_id": str(core.REPORT_CHAT_ID), "caption": f"📤 Клиенты: {len(rows)}"},
+                                      "document", name, data, "text/csv")
+    req = urllib.request.Request("https://api.telegram.org/bot" + core.BOT_TOKEN + "/sendDocument", data=body,
+                                 method="POST", headers={"Content-Type": ctype})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read()).get("ok", False)
+    except Exception as e:
+        print("Export error:", e)
+        return False
+
+
+def set_remind(key, ts, text=""):
+    """Qo'ng'iroq eslatmasi: aniq vaqt + izoh. ts=0 — o'chirish"""
+    with core.LOCK:
+        c = core.STATE["chats"].get(key)
+        if c is None:
+            return False
+        if not ts:
+            c.pop("remind", None)
+        else:
+            c["remind"] = {"ts": float(ts), "text": str(text or "")[:500], "sent": False, "done": False, "created": time.time()}
+    core.save_chat(key)
+    return True
 
 
 def set_deal(key, status, amount=0):
@@ -310,6 +597,9 @@ def set_deal(key, status, amount=0):
             return False
         if status == "called":
             c["call"] = {"status": "done", "ts": time.time()}
+            rm = c.get("remind") or {}
+            if rm.get("ts") and rm["ts"] <= time.time():
+                rm["done"] = True                    # muddati kelgan eslatma bajarildi
         elif status == "uncall":
             c.pop("call", None)
         elif status == "open":
@@ -423,17 +713,37 @@ def handle_get(h):
 
 def handle_post(h, body):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
-    if path != "/admin/api/deal":
+    if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",
+                    "/admin/api/expense"):
         return False
     if not is_admin(h):
         core.IG.respond_html(h, 403, '{"error":"forbidden"}', ctype="application/json")
         return True
     try:
         d = json.loads(body or b"{}")
-        ok = d.get("status") in ("won", "lost", "open", "called", "uncall") and set_deal(str(d.get("key")), d["status"], d.get("amount"))
+        if path == "/admin/api/remind":
+            ok = set_remind(str(d.get("key")), float(d.get("ts") or 0), d.get("text", ""))
+        elif path == "/admin/api/client":
+            ok = update_client(str(d.get("key")), d)
+        elif path == "/admin/api/new":
+            ok = new_client(d)
+        elif path == "/admin/api/export":
+            ok = export_csv()
+        elif path == "/admin/api/expense":
+            if d.get("delete"):
+                ok = del_expense(d["delete"])
+            elif d.get("stop"):
+                ok = stop_recurring(d["stop"])
+            elif d.get("daily"):
+                ok = add_recurring(d)
+            else:
+                ok = add_expense(d)
+        else:
+            ok = d.get("status") in ("won", "lost", "open", "called", "uncall") and set_deal(str(d.get("key")), d["status"], d.get("amount"))
     except Exception:
         ok = False
-    core.IG.respond_html(h, 200 if ok else 400, json.dumps({"ok": bool(ok)}), ctype="application/json")
+    core.IG.respond_html(h, 200 if ok else 400, json.dumps({"ok": bool(ok), **({"key": ok} if isinstance(ok, str) else {})}),
+                         ctype="application/json")
     return True
 
 
@@ -447,11 +757,15 @@ PAGE = r"""<!doctype html>
 --mut:var(--tg-theme-hint-color,#8a8f98);--ac:var(--tg-theme-button-color,#2a7de1);--act:var(--tg-theme-button-text-color,#fff);
 --tg:#2a9fd8;--ig:#d6337a;--ok:#2e9e5b;--bad:#d9534f;--warn:#e69a28}
 *{box-sizing:border-box}body{margin:0;background:var(--bg2);color:var(--tx);font:15px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
-header{position:sticky;top:0;z-index:5;background:var(--bg2);padding:10px 12px 6px}
+header{position:sticky;top:0;z-index:5;background:var(--bg2);
+ padding:calc(10px + var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)) 12px 6px}
+main{padding-bottom:calc(40px + var(--tg-safe-area-inset-bottom,0px)) !important}
+.sheet{padding-bottom:calc(28px + var(--tg-safe-area-inset-bottom,0px)) !important}
+@media(min-width:700px){main,header{max-width:920px;margin:0 auto}.kpis{grid-template-columns:repeat(3,1fr)}}
 .chips,.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}.chips::-webkit-scrollbar,.tabs::-webkit-scrollbar{display:none}
 .chip{border:0;border-radius:16px;padding:6px 12px;background:var(--bg);color:var(--tx);font:inherit;font-size:13px;white-space:nowrap}
 .chip.on{background:var(--ac);color:var(--act)}
-.tabs{margin-top:8px}.tab{flex:1;white-space:nowrap;font-size:14px !important;border:0;background:none;color:var(--mut);font:inherit;font-weight:600;padding:6px 4px;border-bottom:2px solid transparent}
+.tabs{margin-top:8px}.tab{flex:1 0 auto;white-space:nowrap;font-size:14px !important;border:0;background:none;color:var(--mut);font:inherit;font-weight:600;padding:6px 4px;border-bottom:2px solid transparent}
 .tab.on{color:var(--tx);border-color:var(--ac)}
 main{padding:4px 12px 40px}.card{background:var(--bg);border-radius:14px;padding:12px 14px;margin:10px 0}
 h3{margin:0 0 8px;font-size:15px}.mut{color:var(--mut);font-size:13px}
@@ -465,7 +779,8 @@ td:first-child,th:first-child{text-align:left}th{color:var(--mut);font-weight:50
 .bar i{display:block;height:100%}
 .chart{display:flex;align-items:flex-end;gap:2px;height:90px;margin-top:6px}.chart div{flex:1;display:flex;flex-direction:column-reverse;min-width:3px}
 .chart i{display:block;width:100%}.axis{display:flex;justify-content:space-between;color:var(--mut);font-size:11px;margin-top:4px}
-.lead{background:var(--bg);border-radius:14px;padding:10px 12px;margin:8px 0}.lead .top{display:flex;justify-content:space-between;gap:8px}
+.lead{background:var(--bg);border-radius:14px;padding:10px 12px;margin:8px 0}.lead .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.xbtn{border:0;background:var(--bg2);color:var(--tx);border-radius:50%;width:32px;height:32px;font-size:16px;flex:none}
 .badge{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--bg2);white-space:nowrap}
 .b6{background:#2e9e5b22;color:var(--ok)}.b5{background:#e69a2822;color:var(--warn)}.b4{background:#d9534f22;color:var(--bad)}.b-1{opacity:.6}
 .cst{background:var(--bg2);border-radius:10px;padding:6px 8px;margin-bottom:6px}.det{display:none;margin-top:8px;font-size:13px}.lead.open .det{display:block}
@@ -476,6 +791,24 @@ td:first-child,th:first-child{text-align:left}th{color:var(--mut);font-weight:50
 .call .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.want{margin:6px 0 2px}
 .tel{white-space:nowrap;text-decoration:none;background:var(--ok);color:#fff;border-radius:10px;padding:6px 10px;font-size:14px}
 .lnk{text-decoration:none;font-size:13px;border-radius:10px;padding:7px 10px}
+#modal{display:none;position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.45);align-items:flex-end;justify-content:center}
+.sheet{background:var(--bg);width:100%;max-width:520px;border-radius:18px 18px 0 0;padding:16px 16px 28px;max-height:90vh;overflow:auto}
+.bignum{font-size:28px;font-weight:700;margin:6px 0;font-variant-numeric:tabular-nums;letter-spacing:.5px}
+.bigbtn{display:block;width:100%;text-align:center;border:0;border-radius:12px;padding:13px;margin:6px 0;font:inherit;font-weight:600;
+ background:var(--ok);color:#fff;text-decoration:none}.bigbtn.sec{background:var(--bg2);color:var(--tx)}
+.sheet input[type=datetime-local],.sheet textarea{width:100%;font:inherit;border:0;border-radius:10px;padding:10px;background:var(--bg2);color:var(--tx);margin:4px 0}
+.rem{margin:6px 0 0;padding:6px 8px;border-radius:10px;background:var(--bg2);font-size:13px}.rem.due{background:#e69a2833;color:var(--warn);font-weight:600}
+button.tel{border:0;font:inherit}
+.search{width:100%;font:inherit;border:0;border-radius:12px;padding:10px 12px;background:var(--bg);color:var(--tx)}
+.small{font-size:13px;margin-top:3px}.fl{display:block;margin-top:10px;font-size:12px}
+.fi{width:100%;font:inherit;border:0;border-radius:10px;padding:9px 10px;background:var(--bg2);color:var(--tx);margin-top:3px}
+.chips.wrap{flex-wrap:wrap;overflow:visible}.chips.wrap .chip{background:var(--bg2)}.chips.wrap .chip.on{background:var(--ac);color:var(--act)}
+tr.sub td{border-top:0;padding-top:0;color:var(--mut);font-size:12px;text-align:left}
+select.fi{appearance:auto}
+.note{background:var(--bg2);border-radius:10px;padding:6px 8px;margin:4px 0;font-size:13px}
+.lead[data-open],.call[data-open]{cursor:pointer}
+.st-new{background:#d9534f22;color:var(--bad)}.st-work{background:#2a7de122;color:var(--ac)}.st-offer,.st-pay{background:#e69a2822;color:var(--warn)}
+.st-won{background:#2e9e5b22;color:var(--ok)}.st-lost{opacity:.6}
 .cnt{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--bad);color:#fff;font-size:11px;line-height:18px}
 .filters{display:flex;gap:6px;margin-top:4px}.hidden{display:none}
 #err{display:none;padding:30px 16px;text-align:center}
@@ -486,13 +819,18 @@ td:first-child,th:first-child{text-align:left}th{color:var(--mut);font-weight:50
 </header>
 <main id="app"><p class="mut" style="padding:20px">Загрузка…</p></main>
 <div id="err"></div>
+<div id="modal"></div>
 <script>
-const tg=window.Telegram&&Telegram.WebApp; if(tg){tg.ready();tg.expand();}
+const tg=window.Telegram&&Telegram.WebApp;
+if(tg){tg.ready();tg.expand();
+ try{if(tg.isVersionAtLeast&&tg.isVersionAtLeast("8.0")){tg.requestFullscreen();}}catch(e){}      // на весь экран (телефон и компьютер)
+ try{tg.disableVerticalSwipes&&tg.disableVerticalSwipes();}catch(e){}                              // свайп вниз не закрывает панель
+}
 const INIT=tg?tg.initData:"";
 const PER=[["today","Сегодня"],["7d","7 дней"],["month","Месяц"],["30d","30 дней"]];
-const TABS=[["calls","Звонки"],["ov","Обзор"],["fn","Воронка"],["cost","Расходы"],["leads","Лиды"]];
-const COL={tg:"var(--tg)",ig:"var(--ig)"};
-let st={per:"month",tab:"calls",data:null,lf:"hot"};
+const TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"]];
+const COL={tg:"var(--tg)",ig:"var(--ig)",manual:"#8a8f98"};
+let st={per:"month",tab:"calls",data:null,lf:"hot",q:"",sf:"active",qfocus:false};
 try{const s=JSON.parse(localStorage.getItem("adm")||"{}");Object.assign(st,{per:s.per||st.per,tab:s.tab||st.tab})}catch(e){}
 const $=s=>document.querySelector(s);
 const money=(v,d=2)=>"$"+Number(v||0).toFixed(d);
@@ -506,14 +844,63 @@ function chips(){
  const todo=st.data?st.data.calls.filter(x=>x.todo).length:0;
  $("#tabs").innerHTML=TABS.map(([k,n])=>`<button class="tab ${st.tab==k?"on":""}" data-t="${k}">${n}${k=="calls"&&todo?` <span class="cnt">${todo}</span>`:""}</button>`).join("");
 }
+document.addEventListener("input",e=>{if(e.target.id=="q"){st.q=e.target.value;st.qfocus=true;render();}});
 document.addEventListener("click",e=>{
  const p=e.target.closest("[data-p]"),t=e.target.closest("[data-t]"),l=e.target.closest(".lead .top"),f=e.target.closest("[data-lf]"),dl=e.target.closest("[data-deal]");
  if(p){if(p.dataset.p!="re")st.per=p.dataset.p;save();load();}
  if(t){st.tab=t.dataset.t;save();chips();render();}
  if(f){st.lf=f.dataset.lf;render();}
  if(l){l.parentElement.classList.toggle("open");}
- if(dl){const box=dl.closest(".lead,.call");deal(dl.dataset.key,dl.dataset.deal,box&&box.querySelector("input"));}
+ if(dl){const box=dl.closest(".lead,.call");deal(dl.dataset.key,dl.dataset.deal,box&&box.querySelector("input[type=number]"));closeModal();}
+ const cb=e.target.closest("[data-call]");if(cb)openCall(cb.dataset.call);
+ const rb=e.target.closest("[data-rem]");if(rb)openRemind(rb.dataset.rem);
+ if(e.target.closest("[data-close]")||e.target.id=="modal")closeModal();
+ const cp=e.target.closest("[data-copy]");if(cp){try{navigator.clipboard.writeText(cp.dataset.copy);cp.textContent="✓ Скопировано"}catch(_){}}
+ const qs=e.target.closest("[data-quick]");if(qs){const dt=new Date(Date.now()+Number(qs.dataset.quick)*60000);if(qs.dataset.quick=="tm"){dt.setTime(Date.now()+864e5);dt.setHours(10,0,0,0)}
+  const i=$("#rem-dt");if(i)i.value=localDT(dt);}
+ const sv=e.target.closest("[data-saverem]");if(sv)saveRemind(sv.dataset.saverem,false);
+ const oc=e.target.closest("[data-open]");if(oc&&!e.target.closest("button,a,input,textarea,select"))openClient(oc.dataset.open);
+ const sf=e.target.closest("[data-sf]");if(sf){st.sf=sf.dataset.sf;render();}
+ const sg=e.target.closest("[data-stage]");if(sg){$("#cl").dataset.stage=sg.dataset.stage;document.querySelectorAll("[data-stage]").forEach(b=>b.classList.toggle("on",b==sg));
+  const a=$("#cl-amt");if(a)a.style.display=sg.dataset.stage=="won"?"block":"none";}
+ const sc=e.target.closest("[data-saveclient]");if(sc)saveClient(sc.dataset.saveclient);
+ if(e.target.closest("[data-newclient]"))openNew();
+ if(e.target.closest("[data-createclient]"))createClient();
+ if(e.target.closest("[data-export]"))exportCsv(e.target.closest("[data-export]"));
+ if(e.target.closest("[data-addexp]"))addExp();
+ const sr=e.target.closest("[data-stoprec]");if(sr&&confirmStop(sr))post("/admin/api/expense",{stop:sr.dataset.stoprec}).then(r=>r&&load());
+ const de=e.target.closest("[data-delexp]");if(de)post("/admin/api/expense",{delete:de.dataset.delexp}).then(r=>r&&load());
+ const dr=e.target.closest("[data-delrem]");if(dr)saveRemind(dr.dataset.delrem,true);
 });
+const findCall=k=>st.data.calls.find(x=>x.key==k)||{};
+const localDT=d=>{const z=n=>String(n).padStart(2,"0");return d.getFullYear()+"-"+z(d.getMonth()+1)+"-"+z(d.getDate())+"T"+z(d.getHours())+":"+z(d.getMinutes())};
+function modal(html){$("#modal").innerHTML=`<div class="sheet">${html}</div>`;$("#modal").style.display="flex";}
+function closeModal(){const m=$("#modal");if(m)m.style.display="none";}
+function openCall(k){const x=findCall(k);
+ modal(`<div class="mut">${esc(x.who)}</div><div class="bignum">${esc(x.phone)}</div>
+  <div class="mut" style="margin-bottom:12px">🎯 ${esc(x.want)}${x.call_time?"<br>⏰ "+esc(x.call_time):""}</div>
+  <a class="bigbtn" href="tel:${esc(x.tel)}">📞 Позвонить ${esc(x.phone)}</a>
+  <button class="bigbtn sec" data-copy="${esc(x.tel)}">📋 Скопировать номер</button>
+  <div class="mut" style="margin:14px 0 6px">После звонка:</div>
+  <div class="btns"><button class="won" data-deal="called" data-key="${esc(k)}">✓ Позвонил</button>
+  <button class="lost" data-rem="${esc(k)}">⏰ Напомнить позже</button><button class="lost" data-close>Закрыть</button></div>`);}
+function openRemind(k){const x=findCall(k);const def=new Date(x.remind_ts?x.remind_ts*1000:Date.now()+3600e3);
+ modal(`<b>⏰ Напоминание</b><div class="mut">${esc(x.who)} · ${esc(x.phone)}</div>
+  <label class="mut" style="display:block;margin-top:10px">Когда</label><input id="rem-dt" type="datetime-local" value="${localDT(def)}">
+  <div class="btns"><button class="lost" data-quick="60">+1 час</button><button class="lost" data-quick="180">+3 часа</button><button class="lost" data-quick="tm">Завтра 10:00</button></div>
+  <label class="mut" style="display:block;margin-top:10px">Комментарий</label>
+  <textarea id="rem-tx" rows="3" placeholder="Например: перезвонить после совещания, отправить КП">${esc(x.remind_text||"")}</textarea>
+  <div class="btns"><button class="won" data-saverem="${esc(k)}">Сохранить</button>
+  ${x.remind_ts?`<button class="lost" data-delrem="${esc(k)}">Удалить</button>`:""}<button class="lost" data-close>Отмена</button></div>
+  <div class="mut" style="margin-top:8px">В указанное время бот пришлёт вам сообщение с номером и комментарием.</div>`);}
+async function saveRemind(k,del){
+ const v=$("#rem-dt")&&$("#rem-dt").value;const ts=del?0:(v?new Date(v).getTime()/1000:0);
+ if(!del&&!ts){$("#rem-dt").focus();return;}
+ if(!del&&ts<Date.now()/1000){if(tg)tg.HapticFeedback.notificationOccurred("warning");$("#rem-dt").focus();return;}
+ const r=await fetch("/admin/api/remind",{method:"POST",headers:{"X-Init-Data":INIT,"Content-Type":"application/json"},
+  body:JSON.stringify({key:k,ts,text:del?"":($("#rem-tx").value||"")})});
+ if(r.ok){if(tg)tg.HapticFeedback.notificationOccurred("success");closeModal();load();}
+}
 async function load(){
  chips();
  if(!INIT){fail("Откройте панель из Telegram: команда /panel в боте.");return;}
@@ -532,7 +919,9 @@ async function deal(key,status,inp){
 }
 function render(){
  const d=st.data;if(!d)return;
- chips();$("#app").innerHTML={calls,ov,fn,cost,leads}[st.tab](d);
+ const V={calls,crm,fin:finance,ov,fn,cost};if(!V[st.tab])st.tab="calls";
+ chips();$("#app").innerHTML=V[st.tab](d);
+ const q=$("#q");if(q&&st.qfocus){q.focus();q.setSelectionRange(q.value.length,q.value.length);}
 }
 function chRow(name,col,vals){return `<tr><td><span class="dot" style="background:${col}"></span>${name}</td>${vals.map(v=>`<td>${v}</td>`).join("")}</tr>`}
 function ov(d){
@@ -553,6 +942,8 @@ function ov(d){
   ${chRow("Instagram",COL.ig,[p.ig.dialogs,f.ig.hot,f.ig.lead,f.ig.won])}</table></div>
  ${days.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>
   <div class="axis"><span>${days[0].d.slice(5)}</span><span><span class="dot" style="background:var(--tg)"></span>Telegram <span class="dot" style="background:var(--ig);margin-left:6px"></span>Instagram</span><span>${days[days.length-1].d.slice(5)}</span></div></div>`:""}
+ <div class="card"><h3>Сделки по этапам</h3><table>${d.pipe.map(([k,n])=>{const L=d.crm.filter(x=>x.stage==k);
+   return `<tr><td>${n}</td><td>${L.length}</td><td>${k=="won"?money(L.reduce((s,x)=>s+Number(x.deal.amount||0),0),0):""}</td></tr>`}).join("")}</table></div>
  ${d.business.length?`<div class="card"><h3>Кто пишет (бизнес)</h3><table>${d.business.map(([b,n])=>`<tr><td>${esc(b)}</td><td>${n}</td></tr>`).join("")}</table></div>`:""}`;
 }
 function fn(d){
@@ -567,6 +958,39 @@ function fn(d){
  return `<div class="card"><h3>Воронка</h3><p class="mut">Диалоги, начатые за период. Синий — Telegram, розовый — Instagram.</p>${rows}</div>
  <div class="card"><h3>Как идёт процесс</h3><table><tr><th></th><th>Telegram</th><th>Instagram</th></tr>
  ${names.map((n,i)=>`<tr><td>${n}</td><td>${a[i]}</td><td>${b[i]}</td></tr>`).join("")}</table></div>`;
+}
+function finance(d){
+ const today=new Date();const z=n=>String(n).padStart(2,"0");const iso=today.getFullYear()+"-"+z(today.getMonth()+1)+"-"+z(today.getDate());
+ const cn=Object.fromEntries(d.exp_cats.map(c=>[c[0],c[1]]));
+ const er=ch=>{const x=d.econ[ch];return `<tr><td><span class="dot" style="background:${COL[ch]}"></span>${d.ch_names[ch]}</td><td>${money(x.ads,0)}</td><td>${money(x.bot,2)}</td>
+   <td>${x.dialogs}</td><td>${x.leads}</td><td>${x.won}</td><td>${money(x.revenue,0)}</td></tr>
+   <tr class="sub"><td colspan="7">диалог ${x.dialogs?money(x.per_dialog):"—"} · контакт ${x.leads?money(x.per_lead):"—"} · продажа ${x.won?money(x.per_sale):"—"} · ROMI ${x.romi===null?"—":x.romi+"%"}</td></tr>`};
+ return `<div class="kpis">
+  <div class="kpi"><b>${money(d.totals.revenue,0)}</b><span>выручка</span></div>
+  <div class="kpi"><b>${money(d.spend,0)}</b><span>все расходы</span></div>
+  <div class="kpi"><b style="color:${d.profit>=0?"var(--ok)":"var(--bad)"}">${money(d.profit,0)}</b><span>прибыль</span></div>
+  <div class="kpi"><b>${d.romi===null?"—":d.romi+"%"}</b><span>ROMI</span></div></div>
+ <div class="card"><h3>➕ Внести расход</h3>
+  <div class="btns"><input class="fi" id="ex-date" type="date" value="${iso}" style="flex:1;min-width:130px">
+  <select class="fi" id="ex-cat" style="flex:1;min-width:150px">${d.exp_cats.map(c=>`<option value="${c[0]}">${c[1]}</option>`).join("")}</select></div>
+  <div class="btns"><input class="fi" id="ex-amt" type="number" inputmode="decimal" placeholder="Сумма $" style="flex:1">
+  <input class="fi" id="ex-note" placeholder="Комментарий (кампания, за что)" style="flex:2"></div>
+  <label class="mut" style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="ex-daily"> Списывать эту сумму каждый день (например, дневной бюджет таргета)</label>
+  <div class="btns"><button class="won" data-addexp>Добавить</button></div>
+  <p class="mut">ИИ, голос и сервер считаются автоматически — вносите рекламу, подписки, зарплаты и прочее.</p></div>
+ ${d.recurring.length?`<div class="card"><h3>🔁 Ежедневные расходы</h3><table>${d.recurring.map(r=>`<tr><td>${esc(cn[r.cat]||"")}${r.note?`<div class="mut">${esc(r.note)}</div>`:""}<div class="mut">с ${esc(r.since)}</div></td>
+   <td>${money(r.amount,2)}/день</td><td><button class="lost" data-stoprec="${r.id}" style="border:0;border-radius:10px;padding:6px 10px">Стоп</button></td></tr>`).join("")}</table>
+   <p class="mut">Добавляются в расходы автоматически каждый день.</p></div>`:""}
+ <div class="card"><h3>Окупаемость по каналам</h3><table><tr><th></th><th>реклама</th><th>бот</th><th>диал.</th><th>конт.</th><th>прод.</th><th>выручка</th></tr>
+  ${er("tg")}${er("ig")}</table><p class="mut">Цена = реклама канала + расходы бота на этот канал.</p></div>
+ <div class="card"><h3>Куда уходят деньги</h3><table>
+  <tr><td>ИИ, голос, сервер (авто)</td><td>${money(d.spend_auto,2)}</td><td>${d.spend?Math.round(100*d.spend_auto/d.spend):0}%</td></tr>
+  ${d.exp_cats.filter(c=>d.by_cat[c[0]]).map(c=>`<tr><td>${c[1]}</td><td>${money(d.by_cat[c[0]],2)}</td><td>${Math.round(100*d.by_cat[c[0]]/d.spend)}%</td></tr>`).join("")}
+  <tr class="tot"><td>Итого</td><td>${money(d.spend,2)}</td><td></td></tr></table>
+  <div class="bar" style="margin-top:8px;height:10px">${[["auto",d.spend_auto,"#8a8f98"],...d.exp_cats.map((c,i)=>[c[0],d.by_cat[c[0]],["var(--ig)","var(--tg)","#7b61ff","var(--warn)","var(--ok)","#c0c4cc"][i]])]
+   .filter(x=>x[1]).map(x=>`<i style="width:${100*x[1]/(d.spend||1)}%;background:${x[2]}"></i>`).join("")}</div></div>
+ ${d.expenses.length?`<div class="card"><h3>Внесённые расходы</h3><table>${d.expenses.map(x=>`<tr><td>${new Date(x.ts*1000).toLocaleDateString("ru")}<div class="mut">${esc(cn[x.cat]||"")}${x.note?" · "+esc(x.note):""}</div></td>
+   <td>${money(x.amount,2)}</td><td><button class="xbtn" data-delexp="${x.id}">✕</button></td></tr>`).join("")}</table></div>`:""}`;
 }
 function cost(d){
  const c=d.costs,e=d.eleven,s=e.sub;
@@ -591,26 +1015,92 @@ function cost(d){
   <p class="mut">${s.reset?"Обновится "+new Date(s.reset*1000).toLocaleDateString("ru"):""}${used>85?" · минуты заканчиваются — дальше ElevenLabs списывает по $0.18 за минуту":""}</p></div>`:""}`;
 }
 function calls(d){
- const todo=d.calls.filter(x=>x.todo),done=d.calls.filter(x=>!x.todo).slice(0,15);
- const card=x=>`<div class="call ${x.todo?"":"done"}">
+ const todo=d.calls.filter(x=>x.todo),later=d.calls.filter(x=>!x.todo&&x.remind_ts).sort((a,b)=>a.remind_ts-b.remind_ts),
+  done=d.calls.filter(x=>!x.todo&&!x.remind_ts).slice(0,15);
+ const card=x=>`<div class="call ${x.todo?"":"done"}" data-open="${esc(x.key)}">
   <div class="top"><div><b>${esc(x.who)}</b><div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${when(x.ts)} · ${x.readiness}%</div></div>
-  ${x.phone?`<a class="tel" href="tel:${esc(x.phone.replace(/[^+\d]/g,""))}">📞 ${esc(x.phone)}</a>`:`<span class="badge">без номера</span>`}</div>
+  ${x.phone?`<button class="tel" data-call="${esc(x.key)}">📞 Позвонить</button>`:`<span class="badge">без номера</span>`}</div>
+  ${x.remind_ts?`<div class="rem ${x.remind_due?"due":""}">⏰ ${when(x.remind_ts)}${x.remind_text?" — "+esc(x.remind_text):""}</div>`:""}
   <div class="want">🎯 ${esc(x.want)}</div>
   ${x.business?`<div class="mut">🏢 ${esc(x.business)}</div>`:""}
   ${x.call_time||x.budget?`<div class="mut">${x.call_time?"⏰ "+esc(x.call_time):""}${x.call_time&&x.budget?" · ":""}${x.budget?"💰 "+esc(x.budget):""}</div>`:""}
   ${x.objection?`<div class="mut">⚠️ ${esc(x.objection)}</div>`:""}
   ${x.note&&x.note!=x.want?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
-  <div class="btns">${x.todo?`<button class="won" data-deal="called" data-key="${esc(x.key)}">📞 Позвонил</button>
+  <div class="btns">${x.todo?`<button class="won" data-deal="called" data-key="${esc(x.key)}">✓ Позвонил</button>
+   <button class="lost" data-rem="${esc(x.key)}">⏰ Напомнить</button>
    <input type="number" inputmode="decimal" placeholder="сумма $"><button class="lost" data-deal="won" data-key="${esc(x.key)}">✅ Купил</button>
    <button class="lost" data-deal="lost" data-key="${esc(x.key)}">❌ Отказ</button>`:
    `<span class="mut">${x.deal=="won"?"✅ Купил":x.deal=="lost"?"❌ Отказ":"📞 Позвонили "+when(x.called_ts)}</span>
+   ${x.deal?"":`<button class="lost" data-rem="${esc(x.key)}">⏰ ${x.remind_ts?"Изменить":"Напомнить"}</button>`}
    <button class="lost" data-deal="${x.deal?"open":"uncall"}" data-key="${esc(x.key)}">↩︎ Вернуть</button>`}
    ${x.link?`<a class="lost lnk" href="${esc(x.link)}">💬 Чат</a>`:""}</div></div>`;
  return `<div class="kpis"><div class="kpi"><b>${todo.length}</b><span>ждут звонка</span></div>
   <div class="kpi"><b>${d.calls.filter(x=>x.called).length}</b><span>уже позвонили</span></div></div>
   ${todo.length?todo.map(card).join(""):`<p class="mut" style="padding:16px 4px">Сейчас звонить некому — все обработаны 👍</p>`}
+  ${later.length?`<h3 style="margin:16px 4px 4px">⏰ Запланировано</h3>${later.map(card).join("")}`:""}
   ${done.length?`<h3 style="margin:16px 4px 4px">Обработанные</h3>${done.map(card).join("")}`:""}`;
 }
+const findCl=k=>(st.data.crm||[]).find(x=>x.key==k)||{facts:{},notes:[],tail:[],deal:{}};
+const stName=s=>(st.data.pipe.find(p=>p[0]==s)||["",s])[1];
+function crm(d){
+ const q=st.q.trim().toLowerCase();
+ const SF=[["active","В работе"],["all","Все"],...d.pipe.map(p=>[p[0],p[1]])];
+ let L=d.crm;
+ if(st.sf=="active")L=L.filter(x=>!["won","lost","dialog"].includes(x.stage));else if(st.sf!="all")L=L.filter(x=>x.stage==st.sf);
+ if(q)L=L.filter(x=>[x.name,x.username,x.phone,x.tel,x.facts.business,x.facts.need,...x.notes.map(n=>n.t)].join(" ").toLowerCase().includes(q));
+ const cnt=s=>d.crm.filter(x=>s=="all"||(s=="active"?!["won","lost","dialog"].includes(x.stage):x.stage==s)).length;
+ const sum=d.crm.filter(x=>x.stage=="won").reduce((s,x)=>s+Number(x.deal.amount||0),0);
+ const rows=L.slice(0,200).map(x=>`<div class="lead" data-open="${esc(x.key)}"><div class="top"><div><b>${esc(x.name||"—")}${x.username?` <span class="mut">@${esc(x.username)}</span>`:""}</b>
+   <div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${x.phone?esc(x.phone)+" · ":""}${when(x.last)}</div>
+   ${x.facts.need||x.facts.business?`<div class="small">🎯 ${esc((x.facts.business?x.facts.business+" — ":"")+(x.facts.need||""))}</div>`:""}
+   ${x.remind_ts?`<div class="small">⏰ ${when(x.remind_ts)} ${esc(x.remind_text)}</div>`:""}</div>
+   <span class="badge st-${x.stage}">${stName(x.stage)}${x.stage=="won"&&x.deal.amount?" · $"+x.deal.amount:""}</span></div></div>`).join("");
+ return `<input id="q" class="search" placeholder="🔍 Поиск: имя, телефон, бизнес, заметка" value="${esc(st.q)}">
+ <div class="chips filters" style="margin-top:8px">${SF.map(([k,n])=>`<button class="chip ${st.sf==k?"on":""}" data-sf="${k}">${n} <span class="mut">${cnt(k)}</span></button>`).join("")}</div>
+ <div class="btns" style="margin:8px 0"><button class="won" data-newclient>＋ Добавить клиента</button><button class="lost" data-export>📤 Выгрузить в Excel</button>
+ <span class="mut" style="align-self:center">Продажи: ${money(sum,0)}</span></div>
+ ${rows||`<p class="mut" style="padding:16px 4px">Никого не найдено.</p>`}
+ ${L.length>200?`<p class="mut">Показаны первые 200 — уточните поиск.</p>`:""}`;
+}
+function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
+ const inp=(id,lab,v,ph)=>`<label class="mut fl">${lab}</label><input class="fi" id="cf-${id}" value="${esc(v||"")}" placeholder="${ph||""}">`;
+ const tail=x.tail.map(m=>`<div class="msg ${m.r=="a"?"a":""}">${m.r=="a"?(m.h?"👤 ":m.v?"🤖🎙 ":m.f?"🔔 ":"🤖 "):""}${esc(m.t)}</div>`).join("");
+ const notes=x.notes.slice().reverse().map(n=>`<div class="note"><span class="mut">${when(n.ts)}</span> ${esc(n.t)}</div>`).join("");
+ modal(`<div id="cl" data-stage="${x.stage}"><div class="top" style="display:flex;justify-content:space-between;gap:8px">
+   <div><b style="font-size:18px">${esc(x.name||"Клиент")}</b><div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${st.data.ch_names[x.ch]}${x.username?" · @"+esc(x.username):""} · с ${when(x.first)}</div></div>
+   <button class="xbtn" data-close>✕</button></div>
+  ${x.tel?`<a class="bigbtn" href="tel:${esc(x.tel)}">📞 Позвонить ${esc(x.phone)}</a>`:""}
+  <div class="mut fl">Этап сделки</div><div class="chips wrap">${st.data.pipe.map(p=>`<button class="chip ${x.stage==p[0]?"on":""}" data-stage="${p[0]}">${p[1]}</button>`).join("")}</div>
+  <input class="fi" id="cl-amt" type="number" inputmode="decimal" placeholder="Сумма продажи $" value="${x.deal.amount||""}" style="display:${x.stage=="won"?"block":"none"}">
+  ${inp("name","Имя",x.name)}${inp("phone","Телефон",x.phone||"","+998 ...")}${inp("business","Бизнес",f.business)}
+  ${inp("need","Что хочет",f.need)}${inp("offer","Что предложили",f.offer)}${inp("budget","Бюджет",f.budget)}${inp("call_time","Удобное время",f.call_time)}
+  ${f.objection?`<div class="small">⚠️ Возражение: ${esc(f.objection)}</div>`:""}${f.note?`<div class="small">📝 Итог бота: ${esc(f.note)}</div>`:""}
+  <label class="mut fl">Новая заметка</label><textarea class="fi" id="cf-note" rows="2" placeholder="Что обсудили, договорённости…"></textarea>
+  <div class="btns"><button class="won" data-saveclient="${esc(k)}">💾 Сохранить</button><button class="lost" data-rem="${esc(k)}">⏰ ${x.remind_ts?"Напоминание "+when(x.remind_ts):"Напомнить"}</button>
+   ${x.link?`<a class="lost lnk" href="${esc(x.link)}">💬 Чат</a>`:""}</div>
+  ${notes?`<div class="mut fl">Заметки</div>${notes}`:""}
+  ${tail?`<div class="mut fl">Переписка</div>${tail}`:""}
+  <div class="mut" style="margin-top:8px">Готовность ${x.readiness}% · расход на клиента ${money(x.cost,3)}${x.paused?" · бот на паузе (отвечал менеджер)":""}</div></div>`);}
+async function post(url,body){const r=await fetch(url,{method:"POST",headers:{"X-Init-Data":INIT,"Content-Type":"application/json"},body:JSON.stringify(body)});
+ if(tg)tg.HapticFeedback.notificationOccurred(r.ok?"success":"error");return r.ok?r.json():null;}
+async function saveClient(k){const fields={};["name","phone","business","need","offer","budget","call_time"].forEach(i=>fields[i]=$("#cf-"+i).value);
+ const stage=$("#cl").dataset.stage;const amount=$("#cl-amt")?$("#cl-amt").value:0;
+ if(stage=="won"&&!amount){$("#cl-amt").focus();return;}
+ if(await post("/admin/api/client",{key:k,fields,stage,amount,note:$("#cf-note").value})){closeModal();load();}}
+function openNew(){modal(`<b style="font-size:18px">＋ Новый клиент</b><div class="mut">Например, позвонил сам или пришёл по рекомендации</div>
+ <label class="mut fl">Имя</label><input class="fi" id="nc-name"><label class="mut fl">Телефон</label><input class="fi" id="nc-phone" inputmode="tel" placeholder="+998 ...">
+ <label class="mut fl">Бизнес</label><input class="fi" id="nc-business"><label class="mut fl">Что хочет</label><input class="fi" id="nc-need">
+ <label class="mut fl">Бюджет</label><input class="fi" id="nc-budget"><label class="mut fl">Заметка</label><textarea class="fi" id="nc-note" rows="2"></textarea>
+ <div class="btns"><button class="won" data-createclient>Добавить</button><button class="lost" data-close>Отмена</button></div>`);}
+async function createClient(){const b={};["name","phone","business","need","budget","note"].forEach(i=>b[i]=$("#nc-"+i).value);
+ if(!b.name&&!b.phone){$("#nc-name").focus();return;}
+ const r=await post("/admin/api/new",b);if(r){closeModal();await load();if(r.key)openClient(r.key);}}
+function confirmStop(b){if(b.dataset.sure)return true;b.dataset.sure=1;b.textContent="Точно?";return false;}
+async function addExp(){const amt=Number($("#ex-amt").value);if(!(amt>0)){$("#ex-amt").focus();return;}
+ const dv=$("#ex-date").value;const ts=dv?new Date(dv+"T12:00").getTime()/1000:Date.now()/1000;
+ if(await post("/admin/api/expense",{ts,since:dv,daily:$("#ex-daily").checked,cat:$("#ex-cat").value,amount:amt,note:$("#ex-note").value}))load();}
+async function exportCsv(btn){btn.textContent="⏳ Готовлю…";const r=await post("/admin/api/export",{});
+ btn.textContent=r?"✓ Файл в чате с ботом":"Не получилось";}
 function leads(d){
  const F=[["hot","Горячие+"],["all","Все"],["won","Купили"],["cost","Дорогие"]];
  let L=d.leads;if(st.lf=="hot")L=L.filter(x=>x.lvl>=4);if(st.lf=="won")L=L.filter(x=>x.lvl==6);
