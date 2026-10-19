@@ -443,13 +443,19 @@ def client_used_voice(c):
     return bool(u) and u[-1]["t"].startswith(STT.VOICE_PREFIX)
 
 
-MONEY_WORDS = re.compile(r"(?i)(dollar|доллар|so'?m\b|so‘m|сўм|сум\b|сумм|рубл)")   # narx so'z bilan aytilsa ham — ovozga emas
+MONEY_WORDS = re.compile(
+    r"(?i)(dollar|доллар|so['‘’]?m\b|сўм|сум\b|сумм|рубл|narx|нарх|цен[аыуе]|стоит|стоимост|turadi|туради|"
+    # sonlar so'z bilan (narx shu tarzda aytilsa ham ovozga kirmaydi)
+    r"\b(ikki|uch|to['‘’]rt|besh|olti|yetti|sakkiz|to['‘’]qqiz|o['‘’]n|yigirma|o['‘’]ttiz|qirq|ellik|oltmish|yetmish|sakson|to['‘’]qson)"
+    r"\s+(yuz|ming)|\b(yuz|ming|million)\s*(dollar|so|ga|dan|lik)|\bming\b|"
+    r"икки юз|уч юз|минг\b|\b(сто|двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот|тысяч\w*|девяносто|"
+    r"девяноста)\b)")   # narx/son aytilsa — ovozga emas, yozma
 WRITTEN_RE = re.compile(r"\d|\$|https?://|@\w|\b\w+\.(uz|com|ru)\b")   # narx, raqam, telefon, havola — yozma
 
 
-def split_written(parts, spoken):
+def split_written(parts, spoken, script="uz_lat"):
     """Ovozli javob: (ovozga matn, yozma xabarlar). Narxlar, telefonlar, havolalar — faqat yozma."""
-    written = [p for p in parts if WRITTEN_RE.search(p)]
+    written = [p for p in parts if WRITTEN_RE.search(p) or MONEY_WORDS.search(p)]
     spoken = clean_text(str(spoken or "")).strip()
     if spoken and (looks_like_service_text(re.sub(r"\[[a-z ]{3,25}\]", "", spoken)) or len(spoken) > 700):
         spoken = ""
@@ -457,7 +463,9 @@ def split_written(parts, spoken):
         spoken = " ".join(s for s in re.split(r"(?<=[.!?])\s+", spoken)
                           if not WRITTEN_RE.search(s) and not MONEY_WORDS.search(s)).strip()
     if not re.sub(r"\[[a-z ]{3,25}\]", "", spoken).strip():
-        spoken = " ".join(p for p in parts if not WRITTEN_RE.search(p)).strip()
+        spoken = " ".join(p for p in parts if not WRITTEN_RE.search(p) and not MONEY_WORDS.search(p)).strip()
+    if spoken and written and not re.search(r"(?i)pastda|ниже|yozib|ёзиб|написал", spoken):
+        spoken += " Цену и детали написал вам ниже." if script == "ru" else " Narxini pastda yozib qo'ydim."
     return spoken, written
 
 
@@ -465,7 +473,7 @@ def deliver_voice(c, parts, script, spoken=""):
     """Mijoz ovoz yuborgan bo'lsa — ovoz bilan javob (narx/raqamlar alohida yozma). Bo'lmasa False (matn yuboriladi)"""
     if not STT.tts_enabled() or not parts:
         return False
-    text, written = split_written(parts, spoken)
+    text, written = split_written(parts, spoken, script)
     if not text:
         return False          # javob faqat raqamlardan iborat — matn bilan yuboriladi
     if script.startswith("uz"):
@@ -1083,12 +1091,16 @@ def generate_reply(c, script, model=None):
     dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode + BOSS.rules_block(c)
     if client_used_voice(c) and STT.tts_enabled():
         dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет озвучен и отправлен голосовым — не пиши, что умеешь только текстом.\n"
-                "Добавь в JSON поле \"voice\": тот же ответ для озвучки, как живой менеджер говорит голосом: "
-                "тепло, разговорно, связно одной-двумя фразами (узбекский — латиницей). "
-                "НЕ произноси цены, суммы, номера телефонов, ссылки и @аккаунты — они уйдут отдельным текстовым сообщением; если они есть в ответе, вместо них скажи, "
-                "что написал их ниже («narxini pastda yozib qo'ydim», «цену написал вам ниже»). Сами цифры оставь в messages. "
-                "Без $, ссылок, эмодзи и сокращений. "
-                "Можно 1–2 тега интонации в квадратных скобках: [warmly], [cheerfully], [friendly], [softly laughs] — только к месту.")
+                "Добавь в JSON поле \"voice\": то, что ты СКАЖЕШЬ голосом, — как живой менеджер-узбек в Telegram, а не диктор и не робот:\n"
+                "• разговорно и тепло, короткими фразами по 4–10 слов, 2–3 фразы, всего до 220 символов (узбекский — латиницей);\n"
+                "• живые слова в начале или по ходу: «Xo'sh…», «Ha, tushundim», «Aha», «Mana», «Ну смотрите», «Так, понял», «Отлично!» — по одному, к месту;\n"
+                "• разговорные частицы: -da, -ku, -chi, «albatta», «zo'r»; если знаешь имя клиента — обратись по имени;\n"
+                "• паузы многоточием «…» и запятыми, как в живой речи; без книжных и канцелярских слов;\n"
+                "• 1–2 тега интонации к месту: [warmly], [cheerfully], [friendly], [softly laughs], [thoughtful], [excited];\n"
+                "• ЦЕНЫ, суммы, числа, номера телефонов, ссылки и @аккаунты НЕ произноси никак — ни цифрами, ни словами. "
+                "Они придут клиенту отдельным текстом. Если в ответе есть цена — скажи «narxini pastda yozib qo'ydim» / «цену написал вам ниже сообщением». "
+                "Сами цены оставь в messages.\n"
+                "• Без $, ссылок, эмодзи, списков и сокращений.")
     data, feedback, best = None, "", None
     for attempt in range(2):
         convo = msgs if not feedback else msgs + [

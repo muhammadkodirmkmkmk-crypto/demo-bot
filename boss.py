@@ -13,7 +13,15 @@ from datetime import datetime
 
 core = None
 MAX_RULES = 40
-_S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "notify": "all", "digest_day": ""}
+_S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "notify": "all", "digest_day": "", "voice": ""}
+KEYS = ("rules", "hist", "rmap", "test", "notify", "digest_day", "voice")
+VOICE_MODES = {"creative": (0.0, "🎭 Живой (Creative) — максимум эмоций и интонаций, иногда может «переигрывать»"),
+               "natural": (0.5, "🙂 Естественный (Natural) — как обычная речь, сбалансированно"),
+               "robust": (1.0, "🧊 Ровный (Robust) — стабильно, но монотонно")}
+VOICE_SAMPLE = {"uz": "[warmly] Assalomu alaykum, Aziz aka! Xo'sh… saytni qaysi biznes uchun o'ylayapsiz? "
+                      "[cheerfully] Zo'r-da! Narxini pastda yozib qo'ydim.",
+                "ru": "[warmly] Здравствуйте, Азиз! Так… сайт для какого бизнеса планируете? "
+                      "[cheerfully] Отлично! Цену написал вам ниже сообщением."}
 
 BOSS_PROMPT = """Ты — ИИ-продавец компании AI Business UZ. Сейчас ты пишешь не клиенту, а своему руководителю (владельцу компании) в Telegram.
 Ты его сотрудник: докладываешь по делу, коротко и честно, по-русски, без воды и без markdown-заголовков. Можно короткие списки через «•».
@@ -42,13 +50,15 @@ def _load():
         return
     _S["loaded"] = True
     saved = core.db_get("boss:state") or {}
-    for k in ("rules", "hist", "rmap", "test", "notify", "digest_day"):
+    for k in KEYS:
         if k in saved:
             _S[k] = saved[k]
+    if _S["voice"] in VOICE_MODES:
+        core.STT.TTS_STABILITY = VOICE_MODES[_S["voice"]][0]
 
 
 def _save():
-    core.db_put("boss:state", {k: _S[k] for k in ("rules", "hist", "rmap", "test", "notify", "digest_day")})
+    core.db_put("boss:state", {k: _S[k] for k in KEYS})
 
 
 def is_admin_chat(chat_id):
@@ -114,11 +124,25 @@ def card_buttons(key):
                                  {"text": "❌ Отказ", "callback_data": "d:lost:" + s}]]}
 
 
+def send_voice_sample(chat_id):
+    for lang in ("uz", "ru"):
+        audio = core.STT.tts(VOICE_SAMPLE[lang], lang)
+        if audio:
+            core.tg_send_voice(chat_id, audio)
+        else:
+            core.send_msg(chat_id, "Не удалось озвучить пример (проверьте ключ ElevenLabs).")
+            break
+
+
 def on_callback(cq):
     """Kartochkadagi tugmalar"""
     data = cq.get("data") or ""
     msg = cq.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
+    if data.startswith("v:") and is_admin_chat(chat_id):
+        core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Меняю голос…"})
+        command(chat_id, "/voice " + data[2:])
+        return True
     if not data.startswith("d:"):
         return False
     _, action, sid = (data.split(":", 2) + ["", ""])[:3]
@@ -253,6 +277,18 @@ def command(chat_id, text):
                       else "Уведомления: о каждом новом диалоге + горячие и контакты.")
     elif cmd == "/digest":
         send_digest()
+    elif cmd == "/voice":
+        mode = parts[1].lower() if len(parts) > 1 else ""
+        if mode in VOICE_MODES:
+            _S["voice"] = mode
+            core.STT.TTS_STABILITY = VOICE_MODES[mode][0]
+            _save()
+        cur = next((m for m, v in VOICE_MODES.items() if v[0] == core.STT.TTS_STABILITY), "natural")
+        core.tg("sendMessage", {"chat_id": chat_id, "text": "Голос бота сейчас: " + VOICE_MODES[cur][1] +
+                                "\n\nНиже — пример, как он звучит. Сменить:",
+                                "reply_markup": {"inline_keyboard": [[{"text": ("✅ " if m == cur else "") + m.capitalize(),
+                                                                       "callback_data": "v:" + m} for m in VOICE_MODES]]}})
+        send_voice_sample(chat_id)
     else:
         return False
     return True
