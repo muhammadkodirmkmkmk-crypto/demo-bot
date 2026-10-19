@@ -13,8 +13,9 @@ from datetime import datetime
 
 core = None
 MAX_RULES = 40
-_S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "notify": "all", "digest_day": "", "voice": ""}
-KEYS = ("rules", "hist", "rmap", "test", "notify", "digest_day", "voice")
+_S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "notify": "all", "digest_day": "", "voice": "",
+      "voice_id": "", "voice_name": "", "prev_voice": None, "voice_list": []}
+KEYS = ("rules", "hist", "rmap", "test", "notify", "digest_day", "voice", "voice_id", "voice_name", "prev_voice", "voice_list")
 VOICE_MODES = {"creative": (0.0, "🎭 Живой (Creative) — максимум эмоций и интонаций, иногда может «переигрывать»"),
                "natural": (0.5, "🙂 Естественный (Natural) — как обычная речь, сбалансированно"),
                "robust": (1.0, "🧊 Ровный (Robust) — стабильно, но монотонно")}
@@ -55,6 +56,8 @@ def _load():
             _S[k] = saved[k]
     if _S["voice"] in VOICE_MODES:
         core.STT.TTS_STABILITY = VOICE_MODES[_S["voice"]][0]
+    if _S["voice_id"] and not core.STT.TTS_VOICE_ID:
+        core.STT._VOICE_CACHE["resolved"] = _S["voice_id"]
 
 
 def _save():
@@ -124,6 +127,68 @@ def card_buttons(key):
                                  {"text": "❌ Отказ", "callback_data": "d:lost:" + s}]]}
 
 
+def current_voice():
+    vid = core.STT.resolve_voice() if core.STT.ELEVEN_KEY else ""
+    return vid, _S.get("voice_name") or core.STT.TTS_VOICE_NAME
+
+
+def list_voices(chat_id, gender="male"):
+    """ElevenLabs kutubxonasidan o'zbekcha ovozlar: namunasi + «Выбрать» tugmasi"""
+    found = []
+    for q in (f"/v1/shared-voices?page_size=10&language=uz&gender={gender}&sort=usage_character_count_1y",
+              f"/v1/shared-voices?page_size=10&language=uz&gender={gender}",
+              "/v1/shared-voices?page_size=10&search=uzbek"):
+        found = [v for v in core.STT._api("GET", q).get("voices") or [] if v.get("voice_id")]
+        if found:
+            break
+    if not found:
+        core.send_msg(chat_id, "Не удалось получить голоса из библиотеки ElevenLabs. Проверьте ключ (нужно право на голоса).")
+        return
+    _S["voice_list"] = [{"id": v["voice_id"], "owner": v.get("public_owner_id", ""), "name": v.get("name", "")[:60],
+                         "preview": v.get("preview_url", "")} for v in found[:8]]
+    _save()
+    vid, vname = current_voice()
+    core.send_msg(chat_id, f"Сейчас голос: {vname}. Ниже {len(_S['voice_list'])} узбекских голосов "
+                           f"({'мужские' if gender == 'male' else 'женские'}) — послушайте и нажмите «Выбрать».\n"
+                           "После выбора пришлю пример с нашими фразами. Женские: /voices female")
+    for i, v in enumerate(_S["voice_list"]):
+        src = found[i]
+        cap = f"{i + 1}. {v['name']}"
+        desc = " · ".join(x for x in (src.get("accent"), src.get("age"), src.get("descriptive"), src.get("use_case")) if x)
+        if desc:
+            cap += f"\n{desc}"
+        btn = {"inline_keyboard": [[{"text": "✅ Выбрать этот голос", "callback_data": f"vp:{i}"}]]}
+        if v["preview"]:
+            r = core.tg("sendAudio", {"chat_id": chat_id, "audio": v["preview"], "caption": cap[:1000],
+                                      "title": v["name"], "reply_markup": btn})
+            if r.get("ok"):
+                continue
+        core.tg("sendMessage", {"chat_id": chat_id, "text": cap + "\n(без примера)", "reply_markup": btn})
+
+
+def pick_voice(chat_id, idx):
+    try:
+        v = _S["voice_list"][idx]
+    except Exception:
+        core.send_msg(chat_id, "Список устарел — откройте заново: /voices")
+        return
+    old_id, old_name = current_voice()
+    added = core.STT._api("POST", f"/v1/voices/add/{v['owner']}/{v['id']}", {"new_name": v["name"]}) if v["owner"] else {}
+    new_id = added.get("voice_id") or v["id"]
+    set_voice(new_id, v["name"], (old_id, old_name))
+    core.tg("sendMessage", {"chat_id": chat_id, "text": f"🎙 Голос бота теперь: {v['name']}. Вот как он звучит с нашими фразами 👇",
+                            "reply_markup": {"inline_keyboard": [[{"text": f"↩︎ Вернуть {old_name}"[:60], "callback_data": "vb"}]]}})
+    send_voice_sample(chat_id)
+
+
+def set_voice(vid, name, prev=None):
+    if prev is not None:
+        _S["prev_voice"] = list(prev)
+    _S["voice_id"], _S["voice_name"] = vid, name
+    core.STT._VOICE_CACHE["resolved"] = vid
+    _save()
+
+
 def send_voice_sample(chat_id):
     for lang in ("uz", "ru"):
         audio = core.STT.tts(VOICE_SAMPLE[lang], lang)
@@ -142,6 +207,20 @@ def on_callback(cq):
     if data.startswith("v:") and is_admin_chat(chat_id):
         core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Меняю голос…"})
         command(chat_id, "/voice " + data[2:])
+        return True
+    if data.startswith("vp:") and is_admin_chat(chat_id):
+        _load()
+        core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Ставлю голос…"})
+        pick_voice(chat_id, int(data[3:]) if data[3:].isdigit() else -1)
+        return True
+    if data == "vb" and is_admin_chat(chat_id):
+        _load()
+        core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Возвращаю…"})
+        if _S.get("prev_voice"):
+            vid, name = _S["prev_voice"]
+            set_voice(vid, name, current_voice())
+            core.send_msg(chat_id, f"↩︎ Вернул голос: {name}")
+            send_voice_sample(chat_id)
         return True
     if not data.startswith("d:"):
         return False
@@ -277,6 +356,8 @@ def command(chat_id, text):
                       else "Уведомления: о каждом новом диалоге + горячие и контакты.")
     elif cmd == "/digest":
         send_digest()
+    elif cmd == "/voices":
+        list_voices(chat_id, "female" if len(parts) > 1 and parts[1].lower().startswith(("f", "ж")) else "male")
     elif cmd == "/voice":
         mode = parts[1].lower() if len(parts) > 1 else ""
         if mode in VOICE_MODES:
