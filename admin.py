@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 core = None
 ELEVEN_PLAN_USD = float(os.environ.get("ELEVEN_PLAN_USD", "22"))
 ELEVEN_PLAN_CREDITS = int(os.environ.get("ELEVEN_PLAN_CREDITS", "121000"))
-STT_INCLUDED_HOURS = float(os.environ.get("STT_INCLUDED_HOURS", "100"))
+STT_INCLUDED_HOURS = float(os.environ.get("STT_INCLUDED_HOURS", "6.1"))   # Creator: 6 soat 7 daqiqa
 STT_EXTRA_PER_HOUR = float(os.environ.get("STT_EXTRA_PER_HOUR", "0.22"))
 SERVER_USD = float(os.environ.get("SERVER_USD", "5"))
 CHANNELS = ("tg", "ig")
@@ -240,6 +240,7 @@ def build(period="30d"):
                       "tail": [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 ")[:300],
                                 "v": bool(h.get("voice")), "f": bool(h.get("f"))} for h in hist[-8:]]})
     leads.sort(key=lambda x: (-x["lvl"], -x["last"]))
+    calls = call_list(chats)
 
     # --- umumiy hisob
     tts_usd = sum(costs[c]["tts_usd"] for c in costs)
@@ -265,8 +266,41 @@ def build(period="30d"):
         "daily": [{"d": d, **daily[d], "cost": round(core.usage_cost(usage[d]) + sum(
             s.get("tts_chars", 0) for s in stats[d].values()) * usd_per_credit, 3)} for d in days],
         "business": sorted(biz.items(), key=lambda x: -x[1])[:8],
-        "leads": leads[:150], "ch_names": CH_NAMES,
+        "leads": leads[:150], "ch_names": CH_NAMES, "calls": calls,
     }
+
+
+def chat_link(c):
+    if core.chat_channel(c) == "ig":
+        return "https://instagram.com/" + c["username"] if c.get("username") else ""
+    return "tg://user?id=" + str(c.get("chat_id")) if c.get("chat_id") else ""
+
+
+def call_list(chats):
+    """Kimga qo'ng'iroq qilish kerak: telefon qoldirganlar (barcha vaqt)"""
+    out = []
+    for key, c in chats.items():
+        if core.chat_channel(c) not in CHANNELS:
+            continue
+        f = c.get("facts") or {}
+        phone = f.get("phone") or ""
+        if not (phone or c.get("lead_sent")):
+            continue
+        deal = (c.get("deal") or {}).get("status")
+        called = (c.get("call") or {}).get("status") == "done"
+        want = "; ".join(x for x in [f.get("need"), f.get("offer") and "предложено: " + f["offer"]] if x) or \
+            f.get("note") or f.get("business") or "—"
+        who = c.get("name") or "—"
+        if c.get("username"):
+            who += " @" + c["username"]
+        out.append({"key": key, "ch": core.chat_channel(c), "who": who, "phone": phone, "want": want,
+                    "business": f.get("business", ""), "call_time": f.get("call_time", ""), "note": f.get("note", ""),
+                    "budget": f.get("budget", ""), "objection": f.get("objection", ""),
+                    "readiness": int(c.get("readiness") or 0), "ts": c.get("lead_ts") or chat_first_ts(c),
+                    "called": called, "called_ts": (c.get("call") or {}).get("ts", 0), "deal": deal or "",
+                    "todo": not called and deal not in ("won", "lost"), "link": chat_link(c)})
+    out.sort(key=lambda x: (not x["todo"], -x["ts"]))
+    return out[:100]
 
 
 def set_deal(key, status, amount=0):
@@ -274,7 +308,11 @@ def set_deal(key, status, amount=0):
         c = core.STATE["chats"].get(key)
         if c is None:
             return False
-        if status == "open":
+        if status == "called":
+            c["call"] = {"status": "done", "ts": time.time()}
+        elif status == "uncall":
+            c.pop("call", None)
+        elif status == "open":
             c.pop("deal", None)
         else:
             c["deal"] = {"status": status, "amount": float(amount or 0), "ts": time.time()}
@@ -326,9 +364,11 @@ def panel_button(chat_id):
                             "reply_markup": {"inline_keyboard": [[{"text": "📊 Открыть панель", "web_app": {"url": panel_url()}}]]}})
 
 
-COMMANDS = [("panel", "📊 Панель: расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
-            ("month", "Сводка за месяц"), ("leads", "Горячие клиенты и контакты"), ("cost", "Расход на ИИ"),
-            ("eval", "Проверка качества ответов"), ("ig", "Instagram аккаунты")]
+COMMANDS = [("panel", "📊 Панель: звонки, расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
+            ("leads", "Горячие клиенты и контакты"), ("rules", "Мои указания продавцу"),
+            ("test", "Тест: написать боту как клиент"), ("digest", "Отчёт за день сейчас"),
+            ("notify", "Уведомления: все диалоги / только горячие"), ("month", "Сводка за месяц"),
+            ("cost", "Расход на ИИ"), ("eval", "Проверка качества ответов"), ("ig", "Instagram аккаунты")]
 
 
 def setup_menu():
@@ -389,7 +429,7 @@ def handle_post(h, body):
         return True
     try:
         d = json.loads(body or b"{}")
-        ok = d.get("status") in ("won", "lost", "open") and set_deal(str(d.get("key")), d["status"], d.get("amount"))
+        ok = d.get("status") in ("won", "lost", "open", "called", "uncall") and set_deal(str(d.get("key")), d["status"], d.get("amount"))
     except Exception:
         ok = False
     core.IG.respond_html(h, 200 if ok else 400, json.dumps({"ok": bool(ok)}), ctype="application/json")
@@ -410,7 +450,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg2);padding:10px 12px 6
 .chips,.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}.chips::-webkit-scrollbar,.tabs::-webkit-scrollbar{display:none}
 .chip{border:0;border-radius:16px;padding:6px 12px;background:var(--bg);color:var(--tx);font:inherit;font-size:13px;white-space:nowrap}
 .chip.on{background:var(--ac);color:var(--act)}
-.tabs{margin-top:8px}.tab{flex:1;border:0;background:none;color:var(--mut);font:inherit;font-weight:600;padding:6px 4px;border-bottom:2px solid transparent}
+.tabs{margin-top:8px}.tab{flex:1;white-space:nowrap;font-size:14px !important;border:0;background:none;color:var(--mut);font:inherit;font-weight:600;padding:6px 4px;border-bottom:2px solid transparent}
 .tab.on{color:var(--tx);border-color:var(--ac)}
 main{padding:4px 12px 40px}.card{background:var(--bg);border-radius:14px;padding:12px 14px;margin:10px 0}
 h3{margin:0 0 8px;font-size:15px}.mut{color:var(--mut);font-size:13px}
@@ -431,6 +471,11 @@ td:first-child,th:first-child{text-align:left}th{color:var(--mut);font-weight:50
 .msg{margin:3px 0;padding:5px 8px;border-radius:10px;background:var(--bg2);max-width:92%}.msg.a{margin-left:auto;background:#2a7de11a}
 .btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}.btns button,.btns input{font:inherit;font-size:13px;border-radius:10px;border:0;padding:7px 10px}
 .btns input{width:90px;background:var(--bg2);color:var(--tx)}.won{background:var(--ok);color:#fff}.lost{background:var(--bg2);color:var(--tx)}
+.call{background:var(--bg);border-radius:14px;padding:10px 12px;margin:8px 0}.call.done{opacity:.6}
+.call .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.want{margin:6px 0 2px}
+.tel{white-space:nowrap;text-decoration:none;background:var(--ok);color:#fff;border-radius:10px;padding:6px 10px;font-size:14px}
+.lnk{text-decoration:none;font-size:13px;border-radius:10px;padding:7px 10px}
+.cnt{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--bad);color:#fff;font-size:11px;line-height:18px}
 .filters{display:flex;gap:6px;margin-top:4px}.hidden{display:none}
 #err{display:none;padding:30px 16px;text-align:center}
 </style></head><body>
@@ -444,9 +489,9 @@ td:first-child,th:first-child{text-align:left}th{color:var(--mut);font-weight:50
 const tg=window.Telegram&&Telegram.WebApp; if(tg){tg.ready();tg.expand();}
 const INIT=tg?tg.initData:"";
 const PER=[["today","Сегодня"],["7d","7 дней"],["month","Месяц"],["30d","30 дней"]];
-const TABS=[["ov","Обзор"],["fn","Воронка"],["cost","Расходы"],["leads","Лиды"]];
+const TABS=[["calls","Звонки"],["ov","Обзор"],["fn","Воронка"],["cost","Расходы"],["leads","Лиды"]];
 const COL={tg:"var(--tg)",ig:"var(--ig)"};
-let st={per:"month",tab:"ov",data:null,lf:"hot"};
+let st={per:"month",tab:"calls",data:null,lf:"hot"};
 try{const s=JSON.parse(localStorage.getItem("adm")||"{}");Object.assign(st,{per:s.per||st.per,tab:s.tab||st.tab})}catch(e){}
 const $=s=>document.querySelector(s);
 const money=(v,d=2)=>"$"+Number(v||0).toFixed(d);
@@ -457,7 +502,8 @@ function save(){try{localStorage.setItem("adm",JSON.stringify({per:st.per,tab:st
 function chips(){
  $("#per").innerHTML=PER.map(([k,n])=>`<button class="chip ${st.per==k?"on":""}" data-p="${k}">${n}</button>`).join("")+
   `<button class="chip" data-p="re">↻</button>`;
- $("#tabs").innerHTML=TABS.map(([k,n])=>`<button class="tab ${st.tab==k?"on":""}" data-t="${k}">${n}</button>`).join("");
+ const todo=st.data?st.data.calls.filter(x=>x.todo).length:0;
+ $("#tabs").innerHTML=TABS.map(([k,n])=>`<button class="tab ${st.tab==k?"on":""}" data-t="${k}">${n}${k=="calls"&&todo?` <span class="cnt">${todo}</span>`:""}</button>`).join("");
 }
 document.addEventListener("click",e=>{
  const p=e.target.closest("[data-p]"),t=e.target.closest("[data-t]"),l=e.target.closest(".lead .top"),f=e.target.closest("[data-lf]"),dl=e.target.closest("[data-deal]");
@@ -465,7 +511,7 @@ document.addEventListener("click",e=>{
  if(t){st.tab=t.dataset.t;save();chips();render();}
  if(f){st.lf=f.dataset.lf;render();}
  if(l){l.parentElement.classList.toggle("open");}
- if(dl){deal(dl.dataset.key,dl.dataset.deal,dl.closest(".lead").querySelector("input"));}
+ if(dl){const box=dl.closest(".lead,.call");deal(dl.dataset.key,dl.dataset.deal,box&&box.querySelector("input"));}
 });
 async function load(){
  chips();
@@ -485,7 +531,7 @@ async function deal(key,status,inp){
 }
 function render(){
  const d=st.data;if(!d)return;
- $("#app").innerHTML={ov,fn,cost,leads}[st.tab](d);
+ chips();$("#app").innerHTML={calls,ov,fn,cost,leads}[st.tab](d);
 }
 function chRow(name,col,vals){return `<tr><td><span class="dot" style="background:${col}"></span>${name}</td>${vals.map(v=>`<td>${v}</td>`).join("")}</tr>`}
 function ov(d){
@@ -536,12 +582,33 @@ function cost(d){
   <tr><td>Распознавание голосовых · ${d.stt_min} мин</td><td>${money(d.stt_extra)}</td></tr>
   <tr><td>Сервер (Railway, доля)</td><td>${money(d.server)}</td></tr>
   <tr class="tot"><td>Итого</td><td>${money(d.spend)}</td></tr></table>
-  <p class="mut">Голос считается по цене кредита вашего тарифа ElevenLabs ($${e.plan_usd} за ${Number(e.credits_limit).toLocaleString("ru")} кредитов). Распознавание входит в тариф (${e.stt_included_h} ч/мес), платно только сверх.</p></div>
+  <p class="mut">Голос считается по цене кредита вашего тарифа ElevenLabs ($${e.plan_usd} за ${Number(e.credits_limit).toLocaleString("ru")} кредитов). ~1 000 символов ≈ 1 минута речи. Распознавание: ${e.stt_included_h} ч/мес в тарифе, сверх — $0.22/ч.</p></div>
  <div class="card"><h3>По каналам</h3><table><tr><th></th><th>ИИ</th><th>кредиты</th><th>голос $</th><th>мин STT</th></tr>${keys.map(row).join("")}</table>
   <p class="mut">«Ваши тесты» — ваши сообщения боту, «Без канала» — расходы до включения учёта.</p></div>
  ${s?`<div class="card"><h3>ElevenLabs сейчас</h3><div class="l" style="display:flex;justify-content:space-between;font-size:13px"><span>${esc(s.tier||"")}</span><span>${Number(s.used||0).toLocaleString("ru")} из ${Number(s.limit||0).toLocaleString("ru")}</span></div>
   <div class="bar" style="margin-top:6px"><i style="width:${used}%;background:${used>85?"var(--bad)":"var(--ac)"}"></i></div>
-  <p class="mut">${s.reset?"Обновится "+new Date(s.reset*1000).toLocaleDateString("ru"):""}${used>85?" · кредиты заканчиваются — бот перейдёт на текст":""}</p></div>`:""}`;
+  <p class="mut">${s.reset?"Обновится "+new Date(s.reset*1000).toLocaleDateString("ru"):""}${used>85?" · минуты заканчиваются — дальше ElevenLabs списывает по $0.18 за минуту":""}</p></div>`:""}`;
+}
+function calls(d){
+ const todo=d.calls.filter(x=>x.todo),done=d.calls.filter(x=>!x.todo).slice(0,15);
+ const card=x=>`<div class="call ${x.todo?"":"done"}">
+  <div class="top"><div><b>${esc(x.who)}</b><div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${when(x.ts)} · ${x.readiness}%</div></div>
+  ${x.phone?`<a class="tel" href="tel:${esc(x.phone.replace(/[^+\d]/g,""))}">📞 ${esc(x.phone)}</a>`:`<span class="badge">без номера</span>`}</div>
+  <div class="want">🎯 ${esc(x.want)}</div>
+  ${x.business?`<div class="mut">🏢 ${esc(x.business)}</div>`:""}
+  ${x.call_time||x.budget?`<div class="mut">${x.call_time?"⏰ "+esc(x.call_time):""}${x.call_time&&x.budget?" · ":""}${x.budget?"💰 "+esc(x.budget):""}</div>`:""}
+  ${x.objection?`<div class="mut">⚠️ ${esc(x.objection)}</div>`:""}
+  ${x.note&&x.note!=x.want?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
+  <div class="btns">${x.todo?`<button class="won" data-deal="called" data-key="${esc(x.key)}">📞 Позвонил</button>
+   <input type="number" inputmode="decimal" placeholder="сумма $"><button class="lost" data-deal="won" data-key="${esc(x.key)}">✅ Купил</button>
+   <button class="lost" data-deal="lost" data-key="${esc(x.key)}">❌ Отказ</button>`:
+   `<span class="mut">${x.deal=="won"?"✅ Купил":x.deal=="lost"?"❌ Отказ":"📞 Позвонили "+when(x.called_ts)}</span>
+   <button class="lost" data-deal="${x.deal?"open":"uncall"}" data-key="${esc(x.key)}">↩︎ Вернуть</button>`}
+   ${x.link?`<a class="lost lnk" href="${esc(x.link)}">💬 Чат</a>`:""}</div></div>`;
+ return `<div class="kpis"><div class="kpi"><b>${todo.length}</b><span>ждут звонка</span></div>
+  <div class="kpi"><b>${d.calls.filter(x=>x.called).length}</b><span>уже позвонили</span></div></div>
+  ${todo.length?todo.map(card).join(""):`<p class="mut" style="padding:16px 4px">Сейчас звонить некому — все обработаны 👍</p>`}
+  ${done.length?`<h3 style="margin:16px 4px 4px">Обработанные</h3>${done.map(card).join("")}`:""}`;
 }
 function leads(d){
  const F=[["hot","Горячие+"],["all","Все"],["won","Купили"],["cost","Дорогие"]];

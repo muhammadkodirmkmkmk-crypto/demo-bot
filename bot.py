@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import json
+import html
 import time
 import difflib
 import threading
@@ -442,24 +443,46 @@ def client_used_voice(c):
     return bool(u) and u[-1]["t"].startswith(STT.VOICE_PREFIX)
 
 
+MONEY_WORDS = re.compile(r"(?i)(dollar|доллар|so'?m\b|so‘m|сўм|сум\b|сумм|рубл)")   # narx so'z bilan aytilsa ham — ovozga emas
+WRITTEN_RE = re.compile(r"\d|\$|https?://|@\w|\b\w+\.(uz|com|ru)\b")   # narx, raqam, telefon, havola — yozma
+
+
+def split_written(parts, spoken):
+    """Ovozli javob: (ovozga matn, yozma xabarlar). Narxlar, telefonlar, havolalar — faqat yozma."""
+    written = [p for p in parts if WRITTEN_RE.search(p)]
+    spoken = clean_text(str(spoken or "")).strip()
+    if spoken and (looks_like_service_text(re.sub(r"\[[a-z ]{3,25}\]", "", spoken)) or len(spoken) > 700):
+        spoken = ""
+    if spoken and (WRITTEN_RE.search(spoken) or MONEY_WORDS.search(spoken)):
+        spoken = " ".join(s for s in re.split(r"(?<=[.!?])\s+", spoken)
+                          if not WRITTEN_RE.search(s) and not MONEY_WORDS.search(s)).strip()
+    if not re.sub(r"\[[a-z ]{3,25}\]", "", spoken).strip():
+        spoken = " ".join(p for p in parts if not WRITTEN_RE.search(p)).strip()
+    return spoken, written
+
+
 def deliver_voice(c, parts, script, spoken=""):
-    """Mijoz ovoz yuborgan bo'lsa — ovoz bilan javob. Bo'lmasa False (matn yuboriladi)"""
+    """Mijoz ovoz yuborgan bo'lsa — ovoz bilan javob (narx/raqamlar alohida yozma). Bo'lmasa False (matn yuboriladi)"""
     if not STT.tts_enabled() or not parts:
         return False
-    spoken = clean_text(str(spoken or "")).strip()
-    if spoken and not looks_like_service_text(re.sub(r"\[[a-z ]{3,25}\]", "", spoken)) and len(spoken) <= 700:
-        text = to_lat(spoken) if script.startswith("uz") else spoken      # og'zaki variant (sonlar so'z bilan, intonatsiya)
-    else:
-        text = " ".join(to_lat(p) if script.startswith("uz") else p for p in parts)
+    text, written = split_written(parts, spoken)
+    if not text:
+        return False          # javob faqat raqamlardan iborat — matn bilan yuboriladi
+    if script.startswith("uz"):
+        text = to_lat(text)
     audio = STT.tts(text, "ru" if script == "ru" else "uz", wav=c.get("channel") == "ig")
     if not audio:
         return False
     if c.get("channel") == "ig":
-        return IG.send_voice(c, audio)
-    if TYPING_DELAY:
-        tg("sendChatAction", {"chat_id": c["chat_id"], "action": "record_voice",
-                              **({"business_connection_id": c["bc_id"]} if c.get("bc_id") else {})})
-    return tg_send_voice(c["chat_id"], audio, c.get("bc_id"))
+        ok = IG.send_voice(c, audio)
+    else:
+        if TYPING_DELAY:
+            tg("sendChatAction", {"chat_id": c["chat_id"], "action": "record_voice",
+                                  **({"business_connection_id": c["bc_id"]} if c.get("bc_id") else {})})
+        ok = tg_send_voice(c["chat_id"], audio, c.get("bc_id"))
+    if ok and written:
+        deliver(c, written)   # narxlar, telefonlar, havolalar — yozma xabar bilan
+    return ok
 
 
 WORKING_MODEL = {"name": None}
@@ -1057,12 +1080,14 @@ def generate_reply(c, script, model=None):
         return None
     mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: 3 сообщения — приветствие; как дела; лёгкое уточнение его вопроса."
             if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
-    dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode
+    dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode + BOSS.rules_block(c)
     if client_used_voice(c) and STT.tts_enabled():
         dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет озвучен и отправлен голосовым — не пиши, что умеешь только текстом.\n"
                 "Добавь в JSON поле \"voice\": тот же ответ для озвучки, как живой менеджер говорит голосом: "
-                "тепло, разговорно, связно одной-двумя фразами (узбекский — латиницей). Числа и цены — словами "
-                "(«ming to'qqiz yuz to'qson dollar», «девятьсот девяносто долларов»), без $, ссылок, эмодзи и сокращений. "
+                "тепло, разговорно, связно одной-двумя фразами (узбекский — латиницей). "
+                "НЕ произноси цены, суммы, номера телефонов, ссылки и @аккаунты — они уйдут отдельным текстовым сообщением; если они есть в ответе, вместо них скажи, "
+                "что написал их ниже («narxini pastda yozib qo'ydim», «цену написал вам ниже»). Сами цифры оставь в messages. "
+                "Без $, ссылок, эмодзи и сокращений. "
                 "Можно 1–2 тега интонации в квадратных скобках: [warmly], [cheerfully], [friendly], [softly laughs] — только к месту.")
     data, feedback, best = None, "", None
     for attempt in range(2):
@@ -1147,28 +1172,50 @@ def report_target(c):
     return c.get("report_chat") or REPORT_CHAT_ID or STATE["owners"].get(c.get("bc_id") or "", "")
 
 
+def _cut(s, n):
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= n else s[:n - 1].rstrip() + "…"
+
+
 def send_report(c, title):
+    """Qisqa lid kartochkasi + tugmalar (Позвонил / Купил / Отказ). Kartochkaga javob — tuzatish."""
     target = report_target(c)
     if not target:
         print("Report skipped (no target):", title)
         return
     f = c.get("facts", {})
-    who = c.get("name") or "-"
+    ch = chat_channel(c)
+    who = c.get("name") or "Клиент"
     if c.get("username"):
-        who += " (@" + c["username"] + ")"
-    lines = [title, "", f"Клиент: {who}", f"Ссылка: tg://user?id={c.get('chat_id')}",
-             f"Готовность купить: {c.get('readiness', 0)}%"]
-    for k, lab in FACT_LABELS + [("note", "Как идёт диалог")]:
-        if k != "name" and f.get(k):
-            lines.append(f"{lab}: {f[k]}")
-    tail = c["history"][-10:]
-    if tail:
-        lines.append("\nПоследние сообщения:")
-        for h in tail:
-            icon = "👤 " if h["r"] == "u" else ("🤖🎙 " if h.get("voice") else "🤖 ")
-            t = h["t"].replace(STT.VOICE_PREFIX, "🎙 ")
-            lines.append(icon + t[:300])
-    send_msg(target, "\n".join(lines)[:4000])
+        who += " @" + c["username"]
+    link = ADMIN.chat_link(c)
+    esc = lambda s: html.escape(str(s), quote=True)
+    lines = [f"<b>{esc(title)}</b> · {ADMIN.CH_NAMES.get(ch, '')}",
+             "👤 " + (f'<a href="{esc(link)}">{esc(who)}</a>' if link else esc(who))]
+    if f.get("phone"):
+        lines.append(f"📞 {f['phone']}" + (f" · ⏰ {_cut(f['call_time'], 40)}" if f.get("call_time") else ""))
+    if f.get("business") or f.get("need"):
+        lines.append("🎯 " + " — ".join(_cut(x, 90) for x in (f.get("business"), f.get("need")) if x))
+    if f.get("offer") or f.get("budget"):
+        lines.append(" · ".join(x for x in ("💼 " + _cut(f["offer"], 80) if f.get("offer") else "",
+                                            "💰 " + _cut(f["budget"], 40) if f.get("budget") else "") if x))
+    if f.get("objection"):
+        lines.append("⚠️ " + _cut(f["objection"], 80))
+    if f.get("note"):
+        lines.append("📝 " + _cut(f["note"], 140))
+    last_u = next((h["t"] for h in reversed(c["history"]) if h["r"] == "u"), "")
+    if last_u:
+        lines.append("💬 «" + _cut(last_u.replace(STT.VOICE_PREFIX, "🎙 "), 120) + "»")
+    lines = lines[:2] + [esc(x) for x in lines[2:]]
+    lines.append(f"Готовность {c.get('readiness', 0)}%")
+    key = next((k for k, v in STATE["chats"].items() if v is c), None)
+    data = {"chat_id": target, "text": "\n".join(lines)[:4000], "disable_web_page_preview": True, "parse_mode": "HTML"}
+    if key:
+        data["reply_markup"] = BOSS.card_buttons(key)
+    res = tg("sendMessage", data)
+    mid = (res.get("result") or {}).get("message_id")
+    if key and mid:
+        BOSS.remember_card(mid, key)
 
 # ==========================================================================
 # Dialog
@@ -1215,11 +1262,11 @@ def ai_reply(key):
             m = PHONE_RE.search(client_text)
             if m:
                 c["facts"]["phone"] = m.group(0)
-        send_report(c, "🔥 ЛИД: клиент оставил контакт / согласился")
+        send_report(c, "🔥 ЛИД — позвонить")
     elif c["readiness"] >= HOT_THRESHOLD and not c.get("hot_sent"):
         c["hot_sent"] = True
         stat(chat_channel(c), hot=1)
-        send_report(c, "🌶 ГОРЯЧИЙ КЛИЕНТ — пора подключаться")
+        send_report(c, "🌶 ГОРЯЧИЙ клиент — пора подключаться")
     if action == "stop":
         c["status"] = "stopped"
     elif action == "handoff":
@@ -1251,6 +1298,11 @@ def record_client(chat_id, text, bc_id, sender):
         if c["status"] == "stopped":
             c["status"] = "active"
     stat(chat_channel(c), msgs_in=1, new_chats=int(new), voice_in=int(text.startswith(STT.VOICE_PREFIX)))
+    if new:
+        try:
+            BOSS.notify_new_dialog(c, text)
+        except Exception as e:
+            print("Notify error:", e)
     return key, stamp
 
 
@@ -1351,7 +1403,7 @@ def send_followup(key):
         total = len(FOLLOWUP_MINUTES)
         stage = FOLLOWUP_STAGES[-1] if n >= total else FOLLOWUP_STAGES[min(n - 1, len(FOLLOWUP_STAGES) - 2)]
         script = client_script(c)
-        dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + FOLLOWUP_INSTR.format(n=n, total=total, stage=stage)
+        dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + FOLLOWUP_INSTR.format(n=n, total=total, stage=stage) + BOSS.rules_block(c)
         msgs = model_history(c, script)
         msgs.append({"role": "user", "content": "[СИСТЕМА] Напиши напоминание."})
         merged = []
@@ -1390,6 +1442,7 @@ def scheduler():
             if now - last_maint > 3600:
                 last_maint = now
                 IG.maintenance()
+            BOSS.maybe_digest()
             with LOCK:
                 keys = [k for k, c in STATE["chats"].items() if due_followup(c, now)]
             for k in keys:
@@ -1470,8 +1523,13 @@ def handle(update):
             if str(chat_id) == str(REPORT_CHAT_ID):
                 ADMIN.panel_button(chat_id)
             return
-        if text.startswith("/") and ADMIN.command(chat_id, text):
+        if text.startswith("/") and (ADMIN.command(chat_id, text) or BOSS.command(chat_id, text)):
             return
+        if BOSS.is_admin_chat(chat_id) and chat.get("type") == "private" and not BOSS.test_mode():
+            if not text and (msg.get("voice") or msg.get("audio")):
+                text = tg_voice_text(msg).replace(STT.VOICE_PREFIX, "")
+            if text and not text.startswith("/") and BOSS.handle_text(chat_id, text, msg.get("reply_to_message")):
+                return
         if text.startswith("/eval") and str(chat_id) == str(REPORT_CHAT_ID):
             send_msg(chat_id, EVAL.start(text[5:].strip(), lambda t: send_msg(chat_id, t)))
             return
@@ -1483,21 +1541,24 @@ def handle(update):
             if reply:
                 send_msg(chat_id, reply)
             return
-        if chat.get("type") == "private" and text:
+        if chat.get("type") == "private" and text and not (BOSS.is_admin_chat(chat_id) and not BOSS.test_mode()):
             on_client_message(chat_id, text, None, msg.get("from", {}))
         return
 
     if "callback_query" in update:
-        tg("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
+        if not BOSS.on_callback(update["callback_query"]):
+            tg("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
 
 
 import stt as STT  # noqa: E402  (ovozli xabarlar)
 import evalrun as EVAL  # noqa: E402  (modellarni solishtirish)
 import ig as IG  # noqa: E402  (Instagram kanali)
 import admin as ADMIN  # noqa: E402  (admin panel — Telegram Mini App)
+import boss as BOSS  # noqa: E402  (rahbar rejimi: sotuvchi bilan admin chatida gaplashish)
 IG.init(sys.modules[__name__])
 EVAL.init(sys.modules[__name__])
 ADMIN.init(sys.modules[__name__])
+BOSS.init(sys.modules[__name__])
 STT.STATS_HOOK = lambda **kw: (stat(**kw), chat_cost(**kw))
 
 
