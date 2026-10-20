@@ -488,7 +488,7 @@ def crm_list(chats):
             "notes": (c.get("notes") or [])[-30:], "called": (c.get("call") or {}).get("status") == "done",
             "remind_ts": rm.get("ts", 0) if rm.get("ts") and not rm.get("done") else 0, "remind_text": rm.get("text", ""),
             "cost": round(cc.get("ai_usd", 0) + cc.get("tts_chars", 0) * usd_per_credit, 4), "link": chat_link(c),
-            "paused": (c.get("paused_until") or 0) > time.time(), "status": c.get("status", ""),
+            "paused": (c.get("paused_until") or 0) > time.time(), "status": c.get("status", ""), "bot_off": bool(c.get("bot_off")),
             "tail": [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 ")[:400], "v": bool(h.get("voice")),
                       "f": bool(h.get("f")), "h": bool(h.get("human"))} for h in hist[-14:]]})
     out.sort(key=lambda x: -x["last"])
@@ -574,6 +574,31 @@ def export_csv():
     except Exception as e:
         print("Export error:", e)
         return False
+
+
+def set_bot(key, on):
+    """Shu mijoz uchun botni to'xtatish / yoqish (qo'lda boshqaruv)"""
+    with core.LOCK:
+        c = core.STATE["chats"].get(key)
+        if c is None:
+            return False
+        if on:
+            c["bot_off"] = False
+            c["paused_until"] = 0
+            if c.get("status") in ("handoff", "stopped"):
+                c["status"] = "active"
+        else:
+            c["bot_off"] = True
+            c["paused_until"] = time.time() + 10 * 365 * 86400
+    core.save_chat(key)
+    return True
+
+
+def history(key):
+    with core.LOCK:
+        c = core.STATE["chats"].get(key) or {}
+        return [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 "), "ts": h.get("ts", 0), "v": bool(h.get("voice")),
+                 "f": bool(h.get("f")), "h": bool(h.get("human"))} for h in c.get("history", [])]
 
 
 def set_remind(key, ts, text=""):
@@ -714,7 +739,7 @@ def handle_get(h):
 def handle_post(h, body):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
     if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",
-                    "/admin/api/expense"):
+                    "/admin/api/expense", "/admin/api/bot", "/admin/api/history"):
         return False
     if not is_admin(h):
         core.IG.respond_html(h, 403, '{"error":"forbidden"}', ctype="application/json")
@@ -729,6 +754,12 @@ def handle_post(h, body):
             ok = new_client(d)
         elif path == "/admin/api/export":
             ok = export_csv()
+        elif path == "/admin/api/bot":
+            ok = set_bot(str(d.get("key")), bool(d.get("on")))
+        elif path == "/admin/api/history":
+            core.IG.respond_html(h, 200, json.dumps({"ok": True, "items": history(str(d.get("key")))}, ensure_ascii=False),
+                                 ctype="application/json; charset=utf-8")
+            return True
         elif path == "/admin/api/expense":
             if d.get("delete"):
                 ok = del_expense(d["delete"])
@@ -805,6 +836,8 @@ button.tel{border:0;font:inherit}
 .chips.wrap{flex-wrap:wrap;overflow:visible}.chips.wrap .chip{background:var(--bg2)}.chips.wrap .chip.on{background:var(--ac);color:var(--act)}
 tr.sub td{border-top:0;padding-top:0;color:var(--mut);font-size:12px;text-align:left}
 select.fi{appearance:auto}
+.botbar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;padding:8px 10px;border-radius:12px;background:#2e9e5b1a;font-size:13px}
+.botbar.off{background:#d9534f1f}.botbar button{border:0;border-radius:10px;padding:7px 10px;font:inherit;font-size:13px;white-space:nowrap}
 .note{background:var(--bg2);border-radius:10px;padding:6px 8px;margin:4px 0;font-size:13px}
 .lead[data-open],.call[data-open]{cursor:pointer}
 .st-new{background:#d9534f22;color:var(--bad)}.st-work{background:#2a7de122;color:var(--ac)}.st-offer,.st-pay{background:#e69a2822;color:var(--warn)}
@@ -868,6 +901,8 @@ document.addEventListener("click",e=>{
  if(e.target.closest("[data-createclient]"))createClient();
  if(e.target.closest("[data-export]"))exportCsv(e.target.closest("[data-export]"));
  if(e.target.closest("[data-addexp]"))addExp();
+ const bb=e.target.closest("[data-bot]");if(bb)post("/admin/api/bot",{key:bb.dataset.bot,on:bb.dataset.on=="1"}).then(async r=>{if(r){await load();openClient(bb.dataset.bot);}});
+ const hb=e.target.closest("[data-hist]");if(hb)showHist(hb.dataset.hist,hb);
  const sr=e.target.closest("[data-stoprec]");if(sr&&confirmStop(sr))post("/admin/api/expense",{stop:sr.dataset.stoprec}).then(r=>r&&load());
  const de=e.target.closest("[data-delexp]");if(de)post("/admin/api/expense",{delete:de.dataset.delexp}).then(r=>r&&load());
  const dr=e.target.closest("[data-delrem]");if(dr)saveRemind(dr.dataset.delrem,true);
@@ -1053,7 +1088,7 @@ function crm(d){
  const rows=L.slice(0,200).map(x=>`<div class="lead" data-open="${esc(x.key)}"><div class="top"><div><b>${esc(x.name||"—")}${x.username?` <span class="mut">@${esc(x.username)}</span>`:""}</b>
    <div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${x.phone?esc(x.phone)+" · ":""}${when(x.last)}</div>
    ${x.facts.need||x.facts.business?`<div class="small">🎯 ${esc((x.facts.business?x.facts.business+" — ":"")+(x.facts.need||""))}</div>`:""}
-   ${x.remind_ts?`<div class="small">⏰ ${when(x.remind_ts)} ${esc(x.remind_text)}</div>`:""}</div>
+   ${x.remind_ts?`<div class="small">⏰ ${when(x.remind_ts)} ${esc(x.remind_text)}</div>`:""}${x.bot_off?`<div class="small" style="color:var(--bad)">⏸ бот остановлен</div>`:""}</div>
    <span class="badge st-${x.stage}">${stName(x.stage)}${x.stage=="won"&&x.deal.amount?" · $"+x.deal.amount:""}</span></div></div>`).join("");
  return `<input id="q" class="search" placeholder="🔍 Поиск: имя, телефон, бизнес, заметка" value="${esc(st.q)}">
  <div class="chips filters" style="margin-top:8px">${SF.map(([k,n])=>`<button class="chip ${st.sf==k?"on":""}" data-sf="${k}">${n} <span class="mut">${cnt(k)}</span></button>`).join("")}</div>
@@ -1070,6 +1105,7 @@ function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
    <div><b style="font-size:18px">${esc(x.name||"Клиент")}</b><div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>${st.data.ch_names[x.ch]}${x.username?" · @"+esc(x.username):""} · с ${when(x.first)}</div></div>
    <button class="xbtn" data-close>✕</button></div>
   ${x.tel?`<a class="bigbtn" href="tel:${esc(x.tel)}">📞 Позвонить ${esc(x.phone)}</a>`:""}
+  ${x.ch!="manual"?`<div class="botbar ${x.bot_off?"off":""}">${x.bot_off?"⏸ Бот не отвечает этому клиенту":"🤖 Бот отвечает этому клиенту"}<button class="lost" data-bot="${esc(k)}" data-on="${x.bot_off?1:0}">${x.bot_off?"▶️ Включить бота":"⏸ Стоп бот"}</button></div>`:""}
   <div class="mut fl">Этап сделки</div><div class="chips wrap">${st.data.pipe.map(p=>`<button class="chip ${x.stage==p[0]?"on":""}" data-stage="${p[0]}">${p[1]}</button>`).join("")}</div>
   <input class="fi" id="cl-amt" type="number" inputmode="decimal" placeholder="Сумма продажи $" value="${x.deal.amount||""}" style="display:${x.stage=="won"?"block":"none"}">
   ${inp("name","Имя",x.name)}${inp("phone","Телефон",x.phone||"","+998 ...")}${inp("business","Бизнес",f.business)}
@@ -1079,7 +1115,8 @@ function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
   <div class="btns"><button class="won" data-saveclient="${esc(k)}">💾 Сохранить</button><button class="lost" data-rem="${esc(k)}">⏰ ${x.remind_ts?"Напоминание "+when(x.remind_ts):"Напомнить"}</button>
    ${x.link?`<a class="lost lnk" href="${esc(x.link)}">💬 Чат</a>`:""}</div>
   ${notes?`<div class="mut fl">Заметки</div>${notes}`:""}
-  ${tail?`<div class="mut fl">Переписка</div>${tail}`:""}
+  ${tail||x.ch!="manual"?`<div class="mut fl" style="display:flex;justify-content:space-between;align-items:center">Переписка
+   <button class="lost" data-hist="${esc(k)}" style="border:0;border-radius:10px;padding:5px 9px;font-size:12px">📜 Показать всю</button></div><div id="hist">${tail}</div>`:""}
   <div class="mut" style="margin-top:8px">Готовность ${x.readiness}% · расход на клиента ${money(x.cost,3)}${x.paused?" · бот на паузе (отвечал менеджер)":""}</div></div>`);}
 async function post(url,body){const r=await fetch(url,{method:"POST",headers:{"X-Init-Data":INIT,"Content-Type":"application/json"},body:JSON.stringify(body)});
  if(tg)tg.HapticFeedback.notificationOccurred(r.ok?"success":"error");return r.ok?r.json():null;}
@@ -1099,6 +1136,9 @@ function confirmStop(b){if(b.dataset.sure)return true;b.dataset.sure=1;b.textCon
 async function addExp(){const amt=Number($("#ex-amt").value);if(!(amt>0)){$("#ex-amt").focus();return;}
  const dv=$("#ex-date").value;const ts=dv?new Date(dv+"T12:00").getTime()/1000:Date.now()/1000;
  if(await post("/admin/api/expense",{ts,since:dv,daily:$("#ex-daily").checked,cat:$("#ex-cat").value,amount:amt,note:$("#ex-note").value}))load();}
+async function showHist(k,btn){btn.textContent="⏳";const r=await post("/admin/api/history",{key:k});if(!r)return;
+ $("#hist").innerHTML=r.items.map(m=>`<div class="msg ${m.r=="a"?"a":""}"><span class="mut" style="font-size:11px">${when(m.ts)}</span><br>${m.r=="a"?(m.h?"👤 ":m.v?"🤖🎙 ":m.f?"🔔 ":"🤖 "):""}${esc(m.t)}</div>`).join("")||"<p class='mut'>Пусто</p>";
+ btn.textContent=r.items.length+" сообщений";}
 async function exportCsv(btn){btn.textContent="⏳ Готовлю…";const r=await post("/admin/api/export",{});
  btn.textContent=r?"✓ Файл в чате с ботом":"Не получилось";}
 function leads(d){

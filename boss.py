@@ -119,11 +119,36 @@ def remember_card(message_id, key):
     _save()
 
 
+def chat_row(key):
+    """💬 Переписка + ⏸ Стоп / ▶️ Включить бота"""
+    s = short_id(key)
+    off = bool((core.STATE["chats"].get(key) or {}).get("bot_off"))
+    return [{"text": "💬 Переписка", "callback_data": "h:" + s},
+            {"text": "▶️ Включить бота" if off else "⏸ Стоп бот", "callback_data": "b:" + s}]
+
+
 def card_buttons(key):
     s = short_id(key)
     return {"inline_keyboard": [[{"text": "📞 Позвонил", "callback_data": "d:called:" + s},
                                  {"text": "✅ Купил", "callback_data": "d:won:" + s},
-                                 {"text": "❌ Отказ", "callback_data": "d:lost:" + s}]]}
+                                 {"text": "❌ Отказ", "callback_data": "d:lost:" + s}], chat_row(key)]}
+
+
+def history_text(key, limit=25):
+    c = core.STATE["chats"].get(key) or {}
+    who = c.get("name") or "Клиент"
+    if c.get("username"):
+        who += " @" + c["username"]
+    lines = [f"💬 Переписка: {who}" + (" · ⏸ бот остановлен" if c.get("bot_off") else "")]
+    hist = c.get("history", [])
+    if len(hist) > limit:
+        lines.append(f"… ещё {len(hist) - limit} сообщений выше (вся — в панели)")
+    for h in hist[-limit:]:
+        t = datetime.fromtimestamp(h.get("ts") or 0, core.TZ).strftime("%H:%M") if h.get("ts") else ""
+        icon = "👤" if h["r"] == "u" else ("🧑‍💼" if h.get("human") else ("🤖🎙" if h.get("voice") else "🤖"))
+        lines.append(f"{icon} {t} {h['t'].replace(core.STT.VOICE_PREFIX, '🎙 ')[:300]}")
+    out = "\n".join(lines)
+    return out if len(out) <= 4000 else out[:1000] + "\n…\n" + out[-2900:]
 
 
 def current_voice():
@@ -203,6 +228,26 @@ def on_callback(cq):
     data = cq.get("data") or ""
     msg = cq.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
+    if data[:2] in ("h:", "b:"):
+        key = key_by_short(data[2:])
+        if not key or (str(chat_id) != str(core.report_target(core.chat_state(key))) and not is_admin_chat(chat_id)):
+            core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Нет доступа"})
+            return True
+        if data[0] == "h":
+            core.tg("answerCallbackQuery", {"callback_query_id": cq["id"]})
+            core.tg("sendMessage", {"chat_id": chat_id, "text": history_text(key),
+                                    "reply_markup": {"inline_keyboard": [chat_row(key)]}})
+        else:
+            on = bool(core.STATE["chats"][key].get("bot_off"))
+            core.ADMIN.set_bot(key, on)
+            core.tg("answerCallbackQuery", {"callback_query_id": cq["id"],
+                                            "text": "▶️ Бот снова отвечает клиенту" if on else "⏸ Бот больше не отвечает этому клиенту"})
+            kb = (msg.get("reply_markup") or {}).get("inline_keyboard") or []
+            kb = [row for row in kb if not any(str(b.get("callback_data", ""))[:2] in ("h:", "b:") for b in row)] + [chat_row(key)]
+            if msg.get("message_id"):
+                core.tg("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": msg["message_id"],
+                                                   "reply_markup": {"inline_keyboard": kb}})
+        return True
     if data.startswith("v:") and is_admin_chat(chat_id):
         core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Меняю голос…"})
         command(chat_id, "/voice " + data[2:])
@@ -395,7 +440,14 @@ def notify_new_dialog(c, text):
     if c.get("username"):
         who += " @" + c["username"]
     t = text.replace(core.STT.VOICE_PREFIX, "🎙 ")
-    core.send_msg(core.REPORT_CHAT_ID, f"🆕 {core.ADMIN.CH_NAMES[ch]} · {who}: «{t[:160]}»")
+    key = next((k for k, v in core.STATE["chats"].items() if v is c), None)
+    data = {"chat_id": core.REPORT_CHAT_ID, "text": f"🆕 {core.ADMIN.CH_NAMES[ch]} · {who}: «{t[:160]}»"}
+    if key:
+        data["reply_markup"] = {"inline_keyboard": [chat_row(key)]}
+    res = core.tg("sendMessage", data)
+    mid = (res.get("result") or {}).get("message_id")
+    if key and mid:
+        remember_card(mid, key)
 
 
 def send_digest():

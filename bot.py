@@ -1395,7 +1395,7 @@ def on_owner_message(chat_id, bc_id, text=""):
     with LOCK:
         c["chat_id"] = chat_id
         c["bc_id"] = bc_id
-        c["paused_until"] = time.time() + HUMAN_PAUSE_HOURS * 3600
+        c["paused_until"] = max(c.get("paused_until") or 0, time.time() + HUMAN_PAUSE_HOURS * 3600)
         if text:
             c["history"].append({"r": "a", "t": text, "ts": time.time(), "human": True})
     save_chat(key)
