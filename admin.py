@@ -31,7 +31,9 @@ PIPE = [("dialog", "Диалог с ботом"), ("new", "Новый лид"), 
         ("pay", "Ждёт оплаты"), ("won", "Купил"), ("lost", "Отказ")]
 EDIT_FIELDS = ("name", "phone", "business", "need", "budget", "call_time", "offer")
 EXP_CATS = [("ads_ig", "Таргет Instagram", "ig"), ("ads_tg", "Реклама Telegram", "tg"), ("ads_other", "Другая реклама", ""),
-            ("services", "Сервисы и подписки", ""), ("people", "Зарплата / фриланс", ""), ("other", "Прочее", "")]
+            ("ai", "ИИ-сервисы (Claude, ChatGPT)", ""), ("server", "Сервер (Railway)", ""), ("voice", "Голос (ElevenLabs)", ""),
+            ("services", "Другие сервисы", ""), ("people", "Зарплата / фриланс", ""), ("other", "Прочее", "")]
+SEED_MONTHLY = [("ai", 224, "Claude"), ("ai", 5, "ChatGPT"), ("server", 35, "Railway"), ("voice", 22, "ElevenLabs")]
 _EXP = {"loaded": False, "items": []}
 
 
@@ -71,8 +73,25 @@ def recurring():
     return _REC["items"]
 
 
+_SEEDED = {}
+
+
+def seed_monthly():
+    """Bir marta: egasi aytgan oylik obunalar (Claude, ChatGPT, Railway, ElevenLabs) — keyin panelda o'zgartiriladi"""
+    if _SEEDED.get("done"):
+        return
+    if core.db_get("admin:seeded") or any(r.get("freq") == "monthly" for r in recurring()):
+        _SEEDED["done"] = True
+        return
+    _SEEDED["done"] = True
+    first = datetime.now(core.TZ).strftime("%Y-%m-01")
+    for cat, amount, note in SEED_MONTHLY:
+        add_recurring({"cat": cat, "amount": amount, "note": note, "since": first, "freq": "monthly"})
+    core.db_put("admin:seeded", True)
+
+
 def add_recurring(d):
-    """Har kunlik xarajat (masalan, target $15/kun): bugundan boshlab har kuni avtomatik yoziladi"""
+    """Takroriy xarajat: har kuni (target $15/kun) yoki har oy (Claude $224/oy) — avtomatik yoziladi"""
     cats = {c[0] for c in EXP_CATS}
     try:
         amount = round(float(d.get("amount") or 0), 2)
@@ -81,12 +100,25 @@ def add_recurring(d):
     if amount <= 0:
         return False
     since = d.get("since") or datetime.now(core.TZ).strftime("%Y-%m-%d")
-    rule = {"id": hashlib.sha1(f"r{time.time()}{amount}".encode()).hexdigest()[:10], "cat": d.get("cat") if d.get("cat") in cats else "ads_ig",
+    rule = {"id": hashlib.sha1(f"r{time.time()}{amount}{d.get('note')}".encode()).hexdigest()[:10],
+            "cat": d.get("cat") if d.get("cat") in cats else "ads_ig", "freq": "monthly" if d.get("freq") == "monthly" else "daily",
             "amount": amount, "note": str(d.get("note") or "")[:200], "since": since, "last": "", "active": True}
     with core.LOCK:
         recurring().append(rule)
     core.db_put("admin:recurring", recurring())
     apply_recurring()
+    return True
+
+
+def update_recurring(rid, d):
+    with core.LOCK:
+        for r in recurring():
+            if r["id"] == str(rid):
+                if d.get("amount"):
+                    r["amount"] = round(float(d["amount"]), 2)
+                if "note" in d:
+                    r["note"] = str(d["note"] or "")[:200]
+    core.db_put("admin:recurring", recurring())
     return True
 
 
@@ -106,16 +138,17 @@ def apply_recurring():
     for r in list(recurring()):
         if not r.get("active"):
             continue
+        monthly = r.get("freq") == "monthly"
         day = datetime.strptime(r["last"] or r["since"], "%Y-%m-%d").date()
         if r["last"]:
-            day += timedelta(days=1)
+            day = datetime.strptime(core.BILL.add_months(r["last"], 1), "%Y-%m-%d").date() if monthly else day + timedelta(days=1)
         n = 0
         while day <= today and n < 400:
             ts = datetime(day.year, day.month, day.day, 12, tzinfo=core.TZ).timestamp()
-            add_expense({"cat": r["cat"], "amount": r["amount"], "ts": ts, "note": (r["note"] or "") + " · ежедневно",
-                         "rec": r["id"]})
+            add_expense({"cat": r["cat"], "amount": r["amount"], "ts": ts,
+                         "note": (r["note"] or "") + (" · ежемесячно" if monthly else " · ежедневно"), "rec": r["id"]})
             r["last"] = day.strftime("%Y-%m-%d")
-            day += timedelta(days=1)
+            day = datetime.strptime(core.BILL.add_months(r["last"], 1), "%Y-%m-%d").date() if monthly else day + timedelta(days=1)
             n += 1
             changed = True
     if changed:
@@ -161,6 +194,8 @@ def check_init(init_data):
 
 
 def is_admin(h):
+    if core.BILL.session_ok(h):          # veb-CRM (kompyuterdan) — bot bergan havola orqali kirilgan
+        return True
     uid = check_init(h.headers.get("X-Init-Data", ""))
     return bool(uid) and uid == str(core.REPORT_CHAT_ID)
 
@@ -357,6 +392,7 @@ def build(period="30d"):
     total_won = sum(funnel[c]["won"] for c in CHANNELS)
     # --- qo'lda kiritilgan xarajatlar (reklama va b.)
     try:
+        seed_monthly()
         apply_recurring()
     except Exception as e:
         print("Recurring error:", e)
@@ -367,7 +403,10 @@ def build(period="30d"):
     manual = round(sum(x["amount"] for x in exp), 2)
     by_cat = {c[0]: round(sum(x["amount"] for x in exp if x["cat"] == c[0]), 2) for c in EXP_CATS}
     ads = {ch: round(sum(x["amount"] for x in exp if x["ch"] == ch and x["cat"].startswith("ads")), 2) for ch in CHANNELS}
-    spend_auto = ai_total + tts_usd + stt_extra + server
+    if by_cat.get("server"):
+        server = 0.0                    # Railway kiritilgan — taxminiy ulush hisoblanmaydi
+    voice_auto = 0.0 if by_cat.get("voice") else tts_usd + stt_extra
+    spend_auto = ai_total + voice_auto + server
     spend = spend_auto + manual
     econ = {}
     for ch in CHANNELS:
@@ -388,6 +427,19 @@ def build(period="30d"):
         "eleven": {"sub": sub, "plan_usd": ELEVEN_PLAN_USD, "credits_limit": credits_limit,
                    "stt_included_h": STT_INCLUDED_HOURS},
         "funnel_steps": FUNNEL, "funnel": funnel, "proc": proc, "events": ev,
+        **core.BILL.data(chats, start, end_ts),
+        "agent": {"dialogs": total_dialogs, "leads": total_leads, "hot": sum(funnel[c]["hot"] for c in CHANNELS),
+                  "replies": sum(ev.get(c, {}).get("replies", 0) for c in CHANNELS),
+                  "msgs_in": sum(ev.get(c, {}).get("msgs_in", 0) for c in CHANNELS),
+                  "voice_out": sum(ev.get(c, {}).get("voice_out", 0) for c in CHANNELS),
+                  "followups": sum(ev.get(c, {}).get("followups", 0) for c in CHANNELS),
+                  "ai_usd": round(sum(costs[c]["ai"] for c in CHANNELS), 3), "voice_usd": round(sum(costs[c]["tts_usd"] for c in CHANNELS), 3),
+                  "cost": round(sum(costs[c]["ai"] + costs[c]["tts_usd"] for c in CHANNELS), 3)},
+        "rules": core.BOSS.rules(), "voice_mode": next((m for m, v in core.BOSS.VOICE_MODES.items()
+                                                         if v[0] == core.STT.TTS_STABILITY), "calm"),
+        "tenants": [{"ig_id": t["ig_id"], "username": t.get("username", ""), "enabled": t.get("enabled", True),
+                     "company": t.get("company", ""), "kb": bool(t.get("kb"))} for t in core.IG.tenants().values()],
+        "connect_url": core.IG.PUBLIC_URL + "/ig",
         "expenses": exp, "manual": manual, "recurring": [r for r in recurring() if r.get("active")], "by_cat": by_cat, "exp_cats": EXP_CATS, "econ": econ, "spend_auto": round(spend_auto, 2),
         "profit": round(revenue - spend, 2), "romi": round((revenue - spend) / spend * 100) if spend else None,
         "totals": {"dialogs": total_dialogs, "leads": total_leads, "won": total_won, "revenue": round(revenue, 2),
@@ -489,6 +541,7 @@ def crm_list(chats):
             "remind_ts": rm.get("ts", 0) if rm.get("ts") and not rm.get("done") else 0, "remind_text": rm.get("text", ""),
             "cost": round(cc.get("ai_usd", 0) + cc.get("tts_chars", 0) * usd_per_credit, 4), "link": chat_link(c),
             "paused": (c.get("paused_until") or 0) > time.time(), "status": c.get("status", ""), "bot_off": bool(c.get("bot_off")),
+            "payments": c.get("payments", []), "paid": round(sum(p["amount"] for p in c.get("payments", [])), 2),
             "tail": [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 ")[:400], "v": bool(h.get("voice")),
                       "f": bool(h.get("f")), "h": bool(h.get("human"))} for h in hist[-14:]]})
     out.sort(key=lambda x: -x["last"])
@@ -679,7 +732,7 @@ def panel_button(chat_id):
                             "reply_markup": {"inline_keyboard": [[{"text": "📊 Открыть панель", "web_app": {"url": panel_url()}}]]}})
 
 
-COMMANDS = [("panel", "📊 Панель: звонки, расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
+COMMANDS = [("crm", "🖥 CRM: открыть на компьютере / в браузере"), ("panel", "📊 Панель: звонки, расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
             ("leads", "Горячие клиенты и контакты"), ("rules", "Мои указания продавцу"),
             ("test", "Тест: написать боту как клиент"), ("digest", "Отчёт за день сейчас"),
             ("notify", "Уведомления: все диалоги / только горячие"),
@@ -706,6 +759,11 @@ def command(chat_id, text):
     cmd = text.split()[0].split("@")[0].lower()
     if cmd == "/panel":
         panel_button(chat_id)
+    elif cmd == "/crm":
+        url = core.IG.PUBLIC_URL + "/crm/login?t=" + core.BILL.new_login_token()
+        core.tg("sendMessage", {"chat_id": chat_id, "text": "🖥 Вход в CRM. Ссылка одноразовая и действует 10 минут, "
+                                "после входа браузер запомнит вас на 30 дней.\n\nОткройте на компьютере или телефоне 👇",
+                                "reply_markup": {"inline_keyboard": [[{"text": "Открыть CRM", "url": url}]]}})
     elif cmd == "/stats":
         core.send_msg(chat_id, text_summary("today"))
     elif cmd == "/month":
@@ -721,6 +779,8 @@ def command(chat_id, text):
 # --------------------------------------------------------------------------
 def handle_get(h):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
+    if path == "/crm" or path.startswith("/crm/"):
+        return core.CRMWEB.handle_get(h)
     if path == "/admin":
         core.IG.respond_html(h, 200, PAGE, headers={"Cache-Control": "no-store"})
         return True
@@ -739,7 +799,8 @@ def handle_get(h):
 def handle_post(h, body):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
     if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",
-                    "/admin/api/expense", "/admin/api/bot", "/admin/api/history"):
+                    "/admin/api/expense", "/admin/api/bot", "/admin/api/history", "/admin/api/pay", "/admin/api/price",
+                    "/admin/api/sub", "/admin/api/rule", "/admin/api/voice"):
         return False
     if not is_admin(h):
         core.IG.respond_html(h, 403, '{"error":"forbidden"}', ctype="application/json")
@@ -754,6 +815,16 @@ def handle_post(h, body):
             ok = new_client(d)
         elif path == "/admin/api/export":
             ok = export_csv()
+        elif path == "/admin/api/pay":
+            ok = core.BILL.del_payment(str(d.get("key")), d["delete"]) if d.get("delete") else core.BILL.add_payment(str(d.get("key")), d)
+        elif path == "/admin/api/price":
+            ok = core.BILL.set_price(str(d.get("key")), d.get("price"))
+        elif path == "/admin/api/sub":
+            ok = core.BILL.sub_action(d)
+        elif path == "/admin/api/rule":
+            ok = core.BOSS.del_rule(int(d["delete"])) if d.get("delete") else core.BOSS.add_rule(str(d.get("text") or ""))
+        elif path == "/admin/api/voice":
+            ok = core.BOSS.set_voice_mode(str(d.get("mode") or ""))
         elif path == "/admin/api/bot":
             ok = set_bot(str(d.get("key")), bool(d.get("on")))
         elif path == "/admin/api/history":
@@ -765,8 +836,10 @@ def handle_post(h, body):
                 ok = del_expense(d["delete"])
             elif d.get("stop"):
                 ok = stop_recurring(d["stop"])
-            elif d.get("daily"):
-                ok = add_recurring(d)
+            elif d.get("daily") or d.get("freq") in ("daily", "monthly"):
+                ok = add_recurring(dict(d, freq=d.get("freq") or "daily"))
+            elif d.get("update_rec"):
+                ok = update_recurring(d["update_rec"], d)
             else:
                 ok = add_expense(d)
         else:

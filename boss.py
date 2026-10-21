@@ -88,6 +88,35 @@ def rules_block(c):
             "\n".join(f"{i + 1}. {r['t']}" for i, r in enumerate(rs)))
 
 
+def add_rule(text):
+    _load()
+    text = text.strip()[:400]
+    if not text or len(_S["rules"]) >= MAX_RULES:
+        return False
+    _S["rules"].append({"t": text, "ts": time.time()})
+    _save()
+    return True
+
+
+def del_rule(n):
+    _load()
+    if 1 <= n <= len(_S["rules"]):
+        _S["rules"].pop(n - 1)
+        _save()
+        return True
+    return False
+
+
+def set_voice_mode(mode):
+    _load()
+    if mode not in VOICE_MODES:
+        return False
+    _S["voice"] = mode
+    core.STT.TTS_STABILITY = VOICE_MODES[mode][0]
+    _save()
+    return True
+
+
 def rules_text():
     rs = rules()
     if not rs:
@@ -457,6 +486,13 @@ def send_digest():
     if calls:
         lines.append("\n📞 Позвонить (" + str(len(calls)) + "):")
         lines += [f"• {x['who']} {x['phone']} — {x['want'][:100]}" for x in calls[:10]]
+    try:
+        subs = core.BILL.sub_reminders()
+        if subs:
+            lines.append("\n💳 Подписки:")
+            lines += subs[:10]
+    except Exception as e:
+        print("Sub reminders error:", e)
     if _S["rules"]:
         lines.append(f"\n📋 Работаю по {len(_S['rules'])} вашим указаниям · /rules")
     core.tg("sendMessage", {"chat_id": core.REPORT_CHAT_ID, "text": "\n".join(lines)[:4000],
