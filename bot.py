@@ -673,7 +673,8 @@ def build_messages(history):
 # ==========================================================================
 KEEP_LATIN = {"crm", "erp", "ai", "api", "1c", "telegram", "instagram", "excel", "ios", "android", "app", "store",
               "google", "play", "whatsapp", "businessai", "uz", "it", "sms", "pdf", "online", "ok", "okay", "landing",
-              "click", "payme", "faq", "nda", "ielts", "seo", "smm"}
+              "click", "payme", "faq", "nda", "ielts", "seo", "smm", "express", "premium", "nest", "one", "city",
+              "expressschoolbot", "parol"}
 UZ_LETTERS = set("ўқғҳЎҚҒҲ")
 RU_LETTERS = set("ыщЫЩ")
 RU_WORDS = set("""и в во на не что как это для мне нам вы я мы есть нет да можно нужно надо сколько стоит пожалуйста
@@ -817,6 +818,7 @@ SCRIPT_HINT = {
 # Transliteratsiya (lotin -> kirill)
 # ==========================================================================
 TR_KEEP = KEEP_LATIN - {"ok", "okay", "landing", "telegram", "instagram", "excel", "whatsapp", "online"}
+TR_KEEP |= {"b", "c", "bc"}   # haydovchilik toifalari: «B», «BC» lotinda qoladi
 TR_BRANDS = {"telegram": "Телеграм", "instagram": "Инстаграм", "excel": "Эксель", "whatsapp": "Ватсап", "online": "онлайн"}
 TR_EXC = {"budjet": "бюджет", "byudjet": "бюджет", "konsultatsiya": "консультация", "menejer": "менежер",
           "aksiya": "акция", "chegirma": "чегирма", "sayt": "сайт", "landing": "лендинг", "obuna": "обуна",
@@ -903,6 +905,8 @@ SPEAK_WORDS = [  # (regex, o'zbekcha, ruscha)
     (r"(?i:direct)", "директ", "директ"), (r"(?i:excel)", "эксель", "эксель"), (r"(?i:google)", "гугл", "гугл"),
     (r"(?i:whatsapp)", "ватсап", "ватсап"), (r"(?i:android)", "андроид", "андроид"), (r"(?i:online)", "онлайн", "онлайн"),
     (r"(?i:landing)", "лендинг", "лендинг"), (r"(?i:mini ?app)", "мини-апп", "мини-апп"),
+    (r"(?i:express)", "экспресс", "экспресс"), (r"(?i:premium)", "премиум", "премиум"), (r"VIP", "вип", "вип"),
+    (r"(?i:nest one)", "нест уан", "нест уан"), (r"(?i:tashkent city)", "ташкент сити", "ташкент сити"),
 ]
 VOICE_TAG_UZ = {"calm": "[аниқ, шошмасдан]", "warm": "[илиқ, самимий]"}
 VOICE_TAG_RU = {"calm": "[спокойно, уверенно]", "warm": "[тепло, дружелюбно]"}
@@ -1001,8 +1005,22 @@ REFUSAL = re.compile(r"(?i)(kerakmas|керакмас|kerak emas|керак эм
                      r"yo'?q rahmat|йук рахмат|нет,? спасибо|keyinroq|кейинрок|keyin|кейин|потом|подумаю|o'?ylab ko'?ray|уйлаб курай)")
 
 
-def bad_numbers(text, history):
-    allowed = ALLOWED_NUMS | client_numbers(history)
+def base_numbers(c):
+    """Mijoz agenti bazasidagi raqamlar (narxlar so'mda va h.k.) ham ruxsat — o'zimizniki emas"""
+    if c is None:
+        return set()
+    base = IG.prompt_for(c)
+    if base is OWN_PROMPT:
+        return set()
+    return set(re.findall(r"\d+", base))
+
+
+def is_agent_chat(c):
+    return c is not None and IG.prompt_for(c) is not OWN_PROMPT
+
+
+def bad_numbers(text, history, c=None):
+    allowed = ALLOWED_NUMS | client_numbers(history) | base_numbers(c)
     t = PHONE_RE.sub(" ", text)
     t = re.sub(r"\b\d{1,2}[:.]\d{2}\b", " ", t)
     t = TIME_RE.sub(" ", t)
@@ -1175,13 +1193,14 @@ def generate_reply(c, script, model=None):
         out = [render(m, script) for m in raw_msgs]
         d["messages"] = out
         problems = []
-        nums = sorted({n for m in out for n in bad_numbers(m, c["history"])})
+        nums = sorted({n for m in out for n in bad_numbers(m, c["history"], c)})
         if nums:
             problems.append("Убери выдуманные числа " + ", ".join(nums) + " — их нет в базе.")
         reps = [m for m in raw_msgs if is_repeat(m, c["history"])]
         if reps:
             problems.append("Ты повторяешь уже сказанное: «" + reps[0] + "». Скажи по-другому и двигай разговор дальше.")
-        if sum(len(m) for m in out) > MAX_REPLY_CHARS or any(len(m) > MAX_MSG_CHARS for m in out):
+        k = 1.7 if is_agent_chat(c) else 1          # mijoz agenti: narxlar ro'yxati uzunroq bo'lishi mumkin
+        if sum(len(m) for m in out) > MAX_REPLY_CHARS * k or any(len(m) > MAX_MSG_CHARS * k for m in out):
             problems.append("Слишком длинно. Каждое сообщение до 16 слов, всего 1-2 сообщения.")
         if sum(m.count("?") for m in out) > (2 if first else 1):
             problems.append("Только один вопрос в ответе.")
@@ -1210,9 +1229,12 @@ def generate_reply(c, script, model=None):
         feedback = " ".join(problems) + " Верни исправленный JSON."
     data = best[1]
     out = data["messages"]
-    nums = sorted({n for m in out for n in bad_numbers(m, c["history"])})
+    nums = sorted({n for m in out for n in bad_numbers(m, c["history"], c)})
     if nums:
         out = [drop_sentences_with(m, nums) for m in out]
+    ag = c.get("agent") or AGENT_MODE or (AGENTS.for_ig_tenant(c.get("tenant")) if c.get("channel") == "ig" else None)
+    if ag:
+        out = [AGENTS.fix_text(ag, m) for m in out]
     out = [m for m in out if m and not is_repeat(m, c["history"], 0.9) and not looks_like_service_text(m)]
     out = out[:3] if first else out[:2]
     data["messages"] = out
@@ -1492,7 +1514,7 @@ def send_followup(key):
             t = render(clean_text(raw.strip().strip('"«»')), script)
             if looks_like_service_text(t):
                 t = ""
-            if t and not bad_numbers(t, c["history"]) and not is_repeat(t, c["history"], 0.6) and len(t) <= MAX_MSG_CHARS:
+            if t and not bad_numbers(t, c["history"], c) and not is_repeat(t, c["history"], 0.6) and len(t) <= MAX_MSG_CHARS:
                 text = t
                 break
         with LOCK:
@@ -1650,6 +1672,7 @@ BOSS.init(sys.modules[__name__])
 BILL.init(sys.modules[__name__])
 CRMWEB.init(sys.modules[__name__])
 AGENTS.init(sys.modules[__name__])
+OWN_PROMPT = SYSTEM_PROMPT
 if AGENT_MODE and AGENTS.get(AGENT_MODE):
     SYSTEM_PROMPT = AGENTS.get(AGENT_MODE)["prompt"]     # alohida bot rejimi: o'z bazasi va sotuv logikasi
     print("Agent mode:", AGENT_MODE)
