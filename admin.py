@@ -732,7 +732,7 @@ def panel_button(chat_id):
                             "reply_markup": {"inline_keyboard": [[{"text": "📊 Открыть панель", "web_app": {"url": panel_url()}}]]}})
 
 
-COMMANDS = [("crm", "🖥 CRM: открыть на компьютере / в браузере"), ("panel", "📊 Панель: звонки, расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
+COMMANDS = [("crm", "🖥 CRM: открыть на компьютере / в браузере"), ("agents", "🤖 Агенты клиентов и тест"), ("panel", "📊 Панель: звонки, расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
             ("leads", "Горячие клиенты и контакты"), ("rules", "Мои указания продавцу"),
             ("test", "Тест: написать боту как клиент"), ("digest", "Отчёт за день сейчас"),
             ("notify", "Уведомления: все диалоги / только горячие"),
@@ -773,6 +773,8 @@ def command(chat_id, text):
                                    "Удалите сообщение с паролем из этого чата.")
         else:
             core.send_msg(chat_id, "Пароль слишком короткий — минимум 4 символа.")
+    elif cmd in ("/agents", "/agent_owner", "/agent_report", "/agent_ig"):
+        core.send_msg(chat_id, core.AGENTS.admin_command(text))
     elif cmd == "/stats":
         core.send_msg(chat_id, text_summary("today"))
     elif cmd == "/month":

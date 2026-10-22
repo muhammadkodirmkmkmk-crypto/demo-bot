@@ -505,6 +505,10 @@ CTX = threading.local()   # joriy oqim qaysi kanal uchun ishlayapti (tg / ig / t
 def chat_channel(c):
     if c.get("chat_id") == "eval":
         return "eval"
+    if c.get("agent"):
+        return "agent:" + c["agent"]
+    if c.get("channel") == "ig" and AGENTS.for_ig_tenant(c.get("tenant")):
+        return "agent:" + AGENTS.for_ig_tenant(c.get("tenant"))
     if c.get("channel") == "ig":
         return "ig"
     if c.get("channel") == "manual":
@@ -1219,6 +1223,9 @@ def generate_reply(c, script, model=None):
 # Hisobotlar
 # ==========================================================================
 def report_target(c):
+    ch = chat_channel(c)
+    if ch.startswith("agent:"):
+        return AGENTS.report_chat(ch[6:])
     return c.get("report_chat") or REPORT_CHAT_ID or STATE["owners"].get(c.get("bc_id") or "", "")
 
 
@@ -1240,7 +1247,7 @@ def send_report(c, title):
         who += " @" + c["username"]
     link = ADMIN.chat_link(c)
     esc = lambda s: html.escape(str(s), quote=True)
-    lines = [f"<b>{esc(title)}</b> · {ADMIN.CH_NAMES.get(ch, '')}",
+    lines = [f"<b>{esc(title)}</b> · {ADMIN.CH_NAMES.get(ch) or AGENTS.name(ch[6:])}",
              "👤 " + (f'<a href="{esc(link)}">{esc(who)}</a>' if link else esc(who))]
     if f.get("phone"):
         lines.append(f"📞 {ADMIN.fmt_phone(f['phone'])[1]}" + (f" · ⏰ {_cut(f['call_time'], 40)}" if f.get("call_time") else ""))
@@ -1330,6 +1337,18 @@ def record_client(chat_id, text, bc_id, sender):
         c = chat_state(key)
         c["chat_id"] = chat_id
         c["bc_id"] = bc_id
+        if bc_id:                                   # mijoz kompaniyasining Telegram Business'i -> uning agenti
+            ag = AGENTS.for_owner(STATE["owners"].get(bc_id))
+            if ag:
+                c["agent"] = ag
+            else:
+                c.pop("agent", None)
+        elif str(chat_id) == str(REPORT_CHAT_ID):   # admin sinovi: /test <agent>
+            ag = BOSS.test_agent()
+            if ag:
+                c["agent"] = ag
+            else:
+                c.pop("agent", None)
         nm = " ".join(x for x in [sender.get("first_name"), sender.get("last_name")] if x)
         if nm:
             c["name"] = nm
@@ -1370,7 +1389,7 @@ def respond(key, stamp=None):
             save_chat(key)
             return
         last = c["history"][-1]["t"] if c["history"] else ""
-        if c.get("channel") != "ig" and is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
+        if c.get("channel") != "ig" and not c.get("agent") and is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
             biz_key = detect_business(last)
             if biz_key:
                 biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
@@ -1531,6 +1550,8 @@ def handle(update):
             with LOCK:
                 STATE["owners"][bc["id"]] = bc["user"]["id"]
             save_owner(bc["id"])
+            if bc.get("is_enabled", True):
+                AGENTS.on_new_connection(bc["user"]["id"], bc["user"].get("username", ""))
         return
 
     if "business_message" in update:
@@ -1607,12 +1628,14 @@ import admin as ADMIN  # noqa: E402  (admin panel — Telegram Mini App)
 import boss as BOSS  # noqa: E402  (rahbar rejimi: sotuvchi bilan admin chatida gaplashish)
 import billing as BILL  # noqa: E402  (CRM: to'lovlar, obunalar, veb-kirish)
 import crm_web as CRMWEB  # noqa: E402  (CRM veb-interfeysi /crm)
+import agents as AGENTS  # noqa: E402  (mijozlar uchun agentlar: Express School va h.k.)
 IG.init(sys.modules[__name__])
 EVAL.init(sys.modules[__name__])
 ADMIN.init(sys.modules[__name__])
 BOSS.init(sys.modules[__name__])
 BILL.init(sys.modules[__name__])
 CRMWEB.init(sys.modules[__name__])
+AGENTS.init(sys.modules[__name__])
 STT.STATS_HOOK = lambda **kw: (stat(**kw), chat_cost(**kw))
 
 

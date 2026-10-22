@@ -137,6 +137,9 @@ TENANT_PROMPT = """Ты — вежливый, тёплый менеджер по
 
 
 def prompt_for(c):
+    ag = c.get("agent") or (core.AGENTS.for_ig_tenant(c.get("tenant")) if c.get("channel") == "ig" else None)
+    if ag and core.AGENTS.prompt(ag):
+        return core.AGENTS.prompt(ag)
     if c.get("channel") == "ig":
         t = tenants().get(c.get("tenant") or "")
         if t and not is_own(t) and t.get("kb"):

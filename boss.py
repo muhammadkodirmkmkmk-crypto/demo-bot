@@ -13,9 +13,9 @@ from datetime import datetime
 
 core = None
 MAX_RULES = 40
-_S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "notify": "all", "digest_day": "", "voice": "",
+_S = {"loaded": False, "rules": [], "hist": [], "rmap": {}, "test": False, "test_agent": None, "notify": "all", "digest_day": "", "voice": "",
       "voice_id": "", "voice_name": "", "prev_voice": None, "voice_list": []}
-KEYS = ("rules", "hist", "rmap", "test", "notify", "digest_day", "voice", "voice_id", "voice_name", "prev_voice", "voice_list")
+KEYS = ("rules", "hist", "rmap", "test", "test_agent", "notify", "digest_day", "voice", "voice_id", "voice_name", "prev_voice", "voice_list")
 VOICE_MODES = {"lively": (0.5, "🙂 Живой (Stability 0.5) — эмоционально, как в обычных роликах"),
                "calm": (0.75, "🧘 Спокойный (Stability 0.75) — ровно и уверенно")}
 VOICE_SAMPLE = {"uz": "Assalomu alaykum, Aziz aka, xabaringiz uchun katta rahmat. Sayt qaysi biznes uchun kerakligini aytsangiz, "
@@ -70,6 +70,12 @@ def is_admin_chat(chat_id):
 def test_mode():
     _load()
     return bool(_S["test"])
+
+
+def test_agent():
+    """Sinov rejimida qaysi kompaniya sotuvchisi bo'lib javob beriladi (None — o'zimiz)"""
+    _load()
+    return _S.get("test_agent") if _S["test"] else None
 
 # --------------------------------------------------------------------------
 # Qoidalar (barcha suhbatlarga qo'shiladi)
@@ -426,10 +432,27 @@ def command(chat_id, text):
         except Exception:
             core.send_msg(chat_id, "Формат: /rule_del 2")
     elif cmd == "/test":
-        _S["test"] = not _S["test"]
+        slug = parts[1].lower() if len(parts) > 1 else ""
+        if slug and not core.AGENTS.get(slug):
+            core.send_msg(chat_id, "Нет такого агента. Список: /agents")
+            return True
+        prev = _S.get("test_agent") if _S["test"] else "-"
+        _S["test"] = bool(slug) or not _S["test"]
+        _S["test_agent"] = slug or None
         _save()
-        core.send_msg(chat_id, "🧪 Режим теста включён: пишите мне как клиент, я отвечу как продавец. Выйти — /test"
-                      if _S["test"] else "👔 Режим руководителя: пишите мне указания и вопросы, я докладываю. Тест — /test")
+        if (_S.get("test_agent") if _S["test"] else "-") != prev:     # boshqa kompaniya — tarix toza
+            key = f"direct:{chat_id}"
+            with core.LOCK:
+                core.STATE["chats"].pop(key, None)
+            core.chat_state(key)
+            core.save_chat(key)
+        if not _S["test"]:
+            core.send_msg(chat_id, "👔 Режим руководителя: пишите мне указания и вопросы, я докладываю. Тест — /test")
+        elif slug:
+            core.send_msg(chat_id, f"🧪 Тест агента «{core.AGENTS.name(slug)}»: пишите мне как клиент этой компании, "
+                                   "я отвечу как её администратор. Выйти — /test")
+        else:
+            core.send_msg(chat_id, "🧪 Режим теста включён: пишите мне как клиент, я отвечу как продавец. Выйти — /test")
     elif cmd == "/notify":
         _S["notify"] = "hot" if _S["notify"] == "all" else "all"
         _save()
