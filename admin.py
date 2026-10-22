@@ -798,6 +798,8 @@ def handle_get(h):
 
 def handle_post(h, body):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
+    if path in ("/crm/code", "/crm/verify"):
+        return core.CRMWEB.handle_post(h, body)
     if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",
                     "/admin/api/expense", "/admin/api/bot", "/admin/api/history", "/admin/api/pay", "/admin/api/price",
                     "/admin/api/sub", "/admin/api/rule", "/admin/api/voice"):

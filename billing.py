@@ -12,7 +12,7 @@ core = None
 _SUBS = {"loaded": False, "items": []}
 _SESS = {"loaded": False, "items": {}}
 LOGIN_TOKENS = {}          # bir martalik havola tokeni -> amal qilish muddati
-SESSION_DAYS = 30
+SESSION_DAYS = 365
 SUB_STATUSES = {"active": "Активна", "paused": "Пауза", "cancelled": "Отменена"}
 PAY_METHODS = {"cash": "Наличные", "card": "Карта", "transfer": "Перечисление", "click": "Click/Payme", "other": "Другое"}
 
@@ -57,6 +57,10 @@ def login(token):
     exp = LOGIN_TOKENS.pop(token or "", 0)
     if exp < time.time():
         return None
+    return new_session()
+
+
+def new_session():
     sid = secrets.token_urlsafe(32)
     with core.LOCK:
         s = _sessions()
