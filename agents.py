@@ -71,7 +71,10 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
    - Ходил РЕГУЛЯРНО → Express 7 вместе с приложением — «Express 7 + to'liq» (999 000: 7 дней, полный доступ к приложению с телефона и в Telegram).
    Предлагай вариант «вместе с приложением» (to'liq). Если «дорого» — можно без полного доступа: Express 7 — 799 000, Express 10 — 1 099 000.
 4. ВОЗРАЖЕНИЕ «почему так дорого / qimmat» → объясни ценность, не спорь: у нас собственная разработанная методика и своё приложение-тренажёр, как настоящий экзамен (1255 вопросов, AI-разбор ошибок, видео-разборы) — такого нет у других автошкол; мы гарантируем знания: если не сдал — бесплатно готовим к пересдаче, доступ к приложению сохраняется; 17 890+ учеников уже получили права. Потом — рассрочка Uzum nasiya / оплата частями и вопрос, какой вариант ближе. Не обещай 100% сдачу экзамена — гарантируем знания и бесплатную подготовку к пересдаче.
-5. Когда тариф выбран — узнай удобный филиал (у какого метро) и смену (утро/день/вечер), затем имя и номер телефона. Администратор перезвонит в течение 15 минут в рабочее время (пн–сб 09:00–21:00); вне рабочего времени — «в начале рабочего дня». Приезжать для записи не обязательно.
+5. Когда тариф выбран — узнай удобный филиал, потом смену, затем имя и номер телефона.
+   - ФИЛИАЛЫ: когда спрашивают адрес/локацию/филиалы или ты предлагаешь выбрать филиал — НЕ перечисляй их сам. Поставь "show": "branches" — программа сама отправит 4 филиала (каждый отдельным сообщением, с картой). В messages — одна короткая фраза («Bizda 4 ta filial bor, hammasi metro yonida:») и вопрос «Qaysi filial sizga qulay?».
+   - СМЕНЫ: когда выбирают время или ты спрашиваешь о смене — НЕ перечисляй смены сам и не выдумывай время. Поставь "show": "shifts" — программа отправит все 6 смен. В messages — только вопрос «Qaysi smena sizga qulay?» / «Какая смена вам удобнее?».
+   - Клиент назвал время, которое попадает в смену (например «до 13:00») — назови подходящие смены по базе (1-smena 09:00–11:00, 2-smena 11:00–13:00) и спроси, какая удобнее. Администратор перезвонит в течение 15 минут в рабочее время (пн–сб 09:00–21:00); вне рабочего времени — «в начале рабочего дня». Приезжать для записи не обязательно.
 6. Спросили все цены / «нархлар билан таништир» — перечисли кратко, но затем всё равно задай вопрос про сертификат (если ещё не знаешь).
 7. Спросили «в чём разница» — объясни одной-двумя фразами с ценами. Не задавай один и тот же вопрос дважды подряд.
 8. «Подумаю» → мягко спроси, что смущает. «Нет времени» → 6 смен по 2 часа, теория за 7 дней. Хочет попробовать → бесплатный пробный урок (2 часа, один раз) или пробный экзамен на сайте expressschool.uz без регистрации. «Вдвоём с другом» на «B» — каждому −100 000.
@@ -112,6 +115,8 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 НЕ СДАЛ: к пересдаче готовят бесплатно — доступ сохраняется, преподаватель разбирает ошибки.
 ПРЕПОДАВАТЕЛИ: на сайте с отзывами — Shohruh Holtoyev, Diyorbek Ochiliv, Azizbek Abdubakiyev, Johongir Zakirjanov, Muxutdinov Saidqodirbek, Fayzullayev Behruzbek, Xayrullayev Izzatilla, Abdulaziz Mansurov, Rasuljon Mahamadjonov, Bilol G'ulomjonov.
 
+ДОП. ПОЛЕ JSON: "show": "" | "branches" | "shifts" — какой готовый блок программа отправит перед твоим последним сообщением.
+
 ПОЛЯ КАРТОЧКИ (для администратора)
 - business — кратко о клиенте: есть ли сертификат автошколы, регулярно ли ходил на занятия, возраст (если сказал), удобный филиал. need — что хочет: тариф/только теория/полный курс, смена. offer — предложенный тариф. budget — если назвал сумму.
 
@@ -126,8 +131,10 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 «nega bunaqa qimmat» → ["Bizda o'zimiz ishlab chiqqan metodika va haqiqiy imtihondek ilova bor — boshqa avtomaktablarda yo'q.", "Bilimga kafolat beramiz: o'tolmasangiz, qayta tayyorlash bepul. Bo'lib to'lash ham bor."]
 «почему так дорого?» → ["У нас своя методика и собственное приложение-тренажёр, как на настоящем экзамене — такого нет у других.", "Мы гарантируем знания: не сдали — бесплатно готовим к пересдаче. Есть рассрочка Uzum nasiya."]
 «фарки нимада» → ["Express 7 — 7 kunda takrorlash, Express 10 — 10 kunda chuqurroq, VIP — jadval sizga moslab.", "To'liq «B» kursi esa noldan, haydash bilan."]
-«Chilonzorda yashayman» → ["Zo'r, Chilonzor filialimiz metroning yonida.", "Qaysi vaqt qulay — ertalabmi, kunduzimi yoki kechqurun?"]
-«кечкурун» → ["Kechqurun 17:00–19:00 va 19:00–21:00 smenalari bor.", "Ismingiz va raqamingizni qoldirsangiz, administrator 15 daqiqada qo'ng'iroq qiladi."]
+«filiallar qayerda, lokatsiya tashlang» → ["Bizda 4 ta filial bor, hammasi metro yonida:", "Qaysi filial sizga qulay?"] + "show": "branches"
+«Chilonzorda yashayman» → ["Zo'r, Chilonzor filialimiz metroning yonida.", "Qaysi smena sizga qulay?"] + "show": "shifts"
+«ertalab, 13:00 gacha» → ["Ertalab 1-smena 09:00–11:00 va 2-smena 11:00–13:00 bor.", "Qaysi biri qulay?"]
+«2-smena» → ["Zo'r! Ismingiz va raqamingizni qoldirsangiz, administrator 15 daqiqada qo'ng'iroq qiladi."]
 «Ali 901234567» → ["Rahmat, Ali! Administratorimiz tez orada qo'ng'iroq qiladi."]
 «do'stim bilan birga» → ["Zo'r! «B» kursiga ikki do'st birga yozilsa, har biriga 100 000 so'm chegirma.", "Do'stingiz ham «B» kursini o'qimoqchimi?"]
 «parolni unutdim» → ["@ExpressSchoolbot'ga /parol buyrug'ini yuboring, bot yangi parol beradi."]
@@ -138,8 +145,41 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 «sinab ko'rsam bo'ladimi» → ["Albatta, bepul sinov darsi bor — 2 soat, bir marta.", "Ismingiz va raqamingizni qoldirsangiz, administrator yozib qo'yadi."]
 «kerakmas» → ["Tushunarli, bemalol. Savol bo'lsa, istalgan vaqt yozing!"] (action=stop)"""
 
+
+MAP = "https://maps.google.com/?q="
+EXPRESS_BLOCKS = {
+    "branches": {
+        "uz_lat": [
+            "<b>Nest One</b> (asosiy filial)\nIslom Karimov ko'chasi, Tashkent City yonida. Metrodan 1 daqiqa.\n" + MAP + "41.312104,69.253264",
+            "<b>Oybek</b>\nAfrosiyob ko'chasi, Ming O'rik metrosi yonida. Metrodan 1 daqiqa.\n" + MAP + "41.299752,69.271304",
+            "<b>Chilonzor</b>\nKichik halqa yo'li, Chilonzor metrosi yonida. Metrodan 1 daqiqa.\n" + MAP + "41.275895,69.203728",
+            "<b>Maksim Gorkiy</b>\nMirzo Ulug'bek shoh ko'chasi, Buyuk Ipak Yo'li metrosi yonida. Metrodan 2 daqiqa.\n" + MAP + "41.32759,69.328213",
+        ],
+        "uz_cyr": [
+            "<b>Nest One</b> (асосий филиал)\nИслом Каримов кўчаси, Tashkent City ёнида. Метродан 1 дақиқа.\n" + MAP + "41.312104,69.253264",
+            "<b>Ойбек</b>\nАфросиёб кўчаси, Минг Ўрик метроси ёнида. Метродан 1 дақиқа.\n" + MAP + "41.299752,69.271304",
+            "<b>Чилонзор</b>\nКичик ҳалқа йўли, Чилонзор метроси ёнида. Метродан 1 дақиқа.\n" + MAP + "41.275895,69.203728",
+            "<b>Максим Горький</b>\nМирзо Улуғбек шоҳ кўчаси, Буюк Ипак Йўли метроси ёнида. Метродан 2 дақиқа.\n" + MAP + "41.32759,69.328213",
+        ],
+        "ru": [
+            "<b>Nest One</b> (главный филиал)\nУлица Ислама Каримова, рядом с Tashkent City. 1 минута от метро.\n" + MAP + "41.312104,69.253264",
+            "<b>Ойбек</b>\nУлица Афросиаб, у метро Минг Урик. 1 минута от метро.\n" + MAP + "41.299752,69.271304",
+            "<b>Чиланзар</b>\nМалая кольцевая дорога, у метро Чиланзар. 1 минута от метро.\n" + MAP + "41.275895,69.203728",
+            "<b>Максим Горький</b>\nПроспект Мирзо Улугбека, у метро Буюк Ипак Йули. 2 минуты от метро.\n" + MAP + "41.32759,69.328213",
+        ],
+    },
+    "shifts": {
+        "uz_lat": ["<b>Smenalar</b> (dushanba–shanba, har biri 2 soat):\n<b>1-smena</b> — 09:00–11:00\n<b>2-smena</b> — 11:00–13:00\n"
+                   "<b>3-smena</b> — 13:00–15:00\n<b>4-smena</b> — 15:00–17:00\n<b>5-smena</b> — 17:00–19:00\n<b>6-smena</b> — 19:00–21:00"],
+        "uz_cyr": ["<b>Сменалар</b> (душанба–шанба, ҳар бири 2 соат):\n<b>1-смена</b> — 09:00–11:00\n<b>2-смена</b> — 11:00–13:00\n"
+                   "<b>3-смена</b> — 13:00–15:00\n<b>4-смена</b> — 15:00–17:00\n<b>5-смена</b> — 17:00–19:00\n<b>6-смена</b> — 19:00–21:00"],
+        "ru": ["<b>Смены</b> (понедельник–суббота, по 2 часа):\n<b>1 смена</b> — 09:00–11:00\n<b>2 смена</b> — 11:00–13:00\n"
+               "<b>3 смена</b> — 13:00–15:00\n<b>4 смена</b> — 15:00–17:00\n<b>5 смена</b> — 17:00–19:00\n<b>6 смена</b> — 19:00–21:00"],
+    },
+}
+
 PRESETS = {
-    "express": {"slug": "express", "company": "Express School", "prompt": EXPRESS_PROMPT,
+    "express": {"slug": "express", "company": "Express School", "prompt": EXPRESS_PROMPT, "blocks": EXPRESS_BLOCKS,
                 "fix": [(r"\b([Nn])azariya\b", r"\1azariy"), (r"\b([Нн])азария\b", r"\1азарий"),
                         (r"(?i)\bэ[хк]спресс\b", "Express"), (r"(?i)\bekspress\b", "Express")],
                 "site": "https://expressschool.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True},
@@ -158,7 +198,7 @@ def agents():
         items = {}
         for slug, p in PRESETS.items():
             a = dict(p)
-            a.update({k: v for k, v in (saved.get(slug) or {}).items() if k not in ("prompt", "fix")})
+            a.update({k: v for k, v in (saved.get(slug) or {}).items() if k not in ("prompt", "fix", "blocks")})
             items[slug] = a
         for slug, a in saved.items():
             if slug not in items:
@@ -168,7 +208,7 @@ def agents():
 
 
 def _save():
-    core.db_put("agents", {s: {k: v for k, v in a.items() if k not in ("prompt", "fix") or s not in PRESETS}
+    core.db_put("agents", {s: {k: v for k, v in a.items() if k not in ("prompt", "fix", "blocks") or s not in PRESETS}
                            for s, a in agents().items()})
 
 
@@ -212,6 +252,16 @@ def fix_text(slug, text):
     for pat, rep in (get(slug) or {}).get("fix", []):
         text = re.sub(pat, rep, text)
     return text
+
+
+def blocks(slug, names, script):
+    """Tayyor xabarlar (filiallar, smenalar) — mijoz yozgan alifboda, HTML qalin bilan"""
+    bl = (get(slug) or {}).get("blocks") or {}
+    out = []
+    for n in names:
+        b = bl.get(n) or {}
+        out += b.get(script) or b.get("uz_lat") or []
+    return out
 
 
 def channel_names():

@@ -393,6 +393,8 @@ def tg(method, data):
 
 def send_msg(chat_id, text, bc_id=None):
     data = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if text.startswith("<b>"):              # tayyor bloklar (filiallar, smenalar) — qalin sarlavha
+        data["parse_mode"] = "HTML"
     if bc_id:
         data["business_connection_id"] = bc_id
     return tg("sendMessage", data)
@@ -416,7 +418,7 @@ def send_human(chat_id, parts, bc_id=None):
 def deliver(c, parts):
     """Kanalga qarab yuborish: Telegram yoki Instagram"""
     if c.get("channel") == "ig":
-        IG.send_parts(c, parts)
+        IG.send_parts(c, [re.sub(r"</?b>", "", p) for p in parts])
     else:
         send_human(c["chat_id"], parts, c["bc_id"])
 
@@ -1312,14 +1314,23 @@ def ai_reply(key):
     if not out and not c.get("error_reported"):
         c["error_reported"] = True
         send_report(c, "⚠️ Бот не смог сформулировать ответ — ответьте клиенту вручную")
+    ag = c.get("agent") or AGENT_MODE or (AGENTS.for_ig_tenant(c.get("tenant")) if c.get("channel") == "ig" else None)
+    show = d.get("show") or []
+    show = [show] if isinstance(show, str) else show
+    extra = AGENTS.blocks(ag, [x for x in show if x], script) if ag and out else []
     if out:
         c["error_reported"] = False
         voiced = client_used_voice(c) and deliver_voice(c, out, script, d.get("voice"))
-        if not voiced:
+        if voiced and extra:
+            deliver(c, extra)
+        elif not voiced:
+            if extra:          # blok oxirgi savoldan oldin: "4 ta filial bor:" -> filiallar -> "Qaysi biri qulay?"
+                k = len(out) - 1 if "?" in out[-1] else len(out)
+                out = out[:k] + extra + out[k:]
             deliver(c, out)
         with LOCK:
             for m in out:
-                c["history"].append({"r": "a", "t": m, "ts": time.time(), **({"voice": True} if voiced else {})})
+                c["history"].append({"r": "a", "t": re.sub(r"</?b>", "", m), "ts": time.time(), **({"voice": True} if voiced else {})})
         stat(chat_channel(c), replies=1, msgs_out=len(out), voice_out=int(bool(voiced)))
     with LOCK:
         for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):
