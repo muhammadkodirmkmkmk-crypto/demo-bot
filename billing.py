@@ -60,6 +60,54 @@ def login(token):
     return new_session()
 
 
+_PASS = {"loaded": False, "v": None, "fails": 0, "until": 0}
+
+
+def _pass():
+    if not _PASS["loaded"]:
+        _PASS["loaded"] = True
+        _PASS["v"] = core.db_get("crm:pass")
+    return _PASS["v"]
+
+
+def has_password():
+    return bool(_pass())
+
+
+def set_password(pw):
+    """Parol faqat xesh ko'rinishida saqlanadi (kodda emas — repozitoriy ochiq)"""
+    pw = str(pw or "").strip()
+    if len(pw) < 4:
+        return False
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 200000).hex()
+    _PASS.update(loaded=True, v={"salt": salt, "hash": h}, fails=0, until=0)
+    core.db_put("crm:pass", _PASS["v"])
+    return True
+
+
+def check_password(pw):
+    """(ok, xabar). 5 ta xato urinishdan keyin 15 daqiqa bloklanadi"""
+    p = _pass()
+    if not p:
+        return False, "Пароль ещё не задан — напишите боту /crm_pass и пароль"
+    if time.time() < _PASS["until"]:
+        return False, f"Слишком много попыток. Попробуйте через {int((_PASS['until'] - time.time()) // 60) + 1} мин."
+    h = hashlib.pbkdf2_hmac("sha256", str(pw or "").strip().encode(), bytes.fromhex(p["salt"]), 200000).hex()
+    if secrets.compare_digest(h, p["hash"]):
+        _PASS.update(fails=0, until=0)
+        return True, ""
+    _PASS["fails"] += 1
+    if _PASS["fails"] >= 5:
+        _PASS.update(fails=0, until=time.time() + 900)
+        try:
+            core.tg("sendMessage", {"chat_id": core.REPORT_CHAT_ID, "text": "⚠️ CRM: 5 неверных паролей подряд. Вход заблокирован на 15 минут."})
+        except Exception:
+            pass
+        return False, "Неверный пароль. Вход заблокирован на 15 минут."
+    return False, "Неверный пароль"
+
+
 def new_session():
     sid = secrets.token_urlsafe(32)
     with core.LOCK:

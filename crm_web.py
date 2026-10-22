@@ -17,6 +17,13 @@ def init(bot_module):
     core = bot_module
 
 
+def login_page(msg):
+    pw = core.BILL.has_password()
+    if pw and msg.startswith("Нажмите"):
+        msg = "Введите пароль. Этот браузер запомнится на год."
+    return LOGIN_PAGE.replace("{{MSG}}", msg).replace("{{PW}}", "" if pw else "hid").replace("{{CODE}}", "hid" if pw else "")
+
+
 def handle_get(h):
     u = urllib.parse.urlparse(h.path)
     path = u.path.rstrip("/")
@@ -24,7 +31,7 @@ def handle_get(h):
     if path == "/crm/login":
         sid = core.BILL.login((q.get("t") or [""])[0])
         if not sid:
-            core.IG.respond_html(h, 200, LOGIN_PAGE.replace("{{MSG}}", "Ссылка устарела. Нажмите кнопку — бот пришлёт код для входа."))
+            core.IG.respond_html(h, 200, login_page("Ссылка устарела. Нажмите кнопку — бот пришлёт код для входа."))
             return True
         core.IG.respond_html(h, 302, "", headers={
             "Location": "/crm", "Cache-Control": "no-store",
@@ -46,7 +53,7 @@ def handle_get(h):
         return True
     if path == "/crm":
         if not core.BILL.session_ok(h):
-            core.IG.respond_html(h, 200, LOGIN_PAGE.replace("{{MSG}}", "Нажмите кнопку — бот пришлёт вам код для входа. Этот браузер запомнится на год."),
+            core.IG.respond_html(h, 200, login_page("Нажмите кнопку — бот пришлёт вам код для входа. Этот браузер запомнится на год."),
                                  headers={"Cache-Control": "no-store"})
             return True
         core.IG.respond_html(h, 200, PAGE, headers={"Cache-Control": "no-store"})
@@ -72,6 +79,16 @@ def handle_post(h, body):
                                 "text": f"🔐 Код для входа в CRM: <code>{_CODE['code']}</code>\nДействует 10 минут. "
                                         "Если вы не входили — просто проигнорируйте."})
         return _json(h, 200, {"ok": True})
+    if path == "/crm/pass":
+        try:
+            pw = str(json.loads(body or b"{}").get("password") or "")
+        except Exception:
+            pw = ""
+        ok, err = core.BILL.check_password(pw)
+        if not ok:
+            return _json(h, 400, {"ok": False, "error": err})
+        sid = core.BILL.new_session()
+        return _json(h, 200, {"ok": True}, headers={"Set-Cookie": f"crm_s={sid}; Path=/; Max-Age={core.BILL.SESSION_DAYS * 86400}; HttpOnly; Secure; SameSite=Lax"})
     if path == "/crm/verify":
         try:
             code = str(json.loads(body or b"{}").get("code") or "").strip()
@@ -101,7 +118,9 @@ input{border:1px solid #e5e7eb;text-align:center;font-size:22px;letter-spacing:6
 @media(prefers-color-scheme:dark){body{background:#0b0c10;color:#eef0f5}.box{background:#15171d;box-shadow:none}p{color:#8f97a8}.tag{color:#c3c8d4}input{background:#0b1020;border-color:#2a3350;color:#e5e7eb}}
 </style></head><body><div class="box"><img class="logo" src="/crm/logo.webp" alt=""><div class="wm"><i>AI</i> BUSINESS</div><div class="tag">AUTOMATE <b>•</b> OPTIMIZE <b>•</b> GROW</div>
 <p id="msg">{{MSG}}</p>
-<div id="s1"><button id="get" onclick="getCode()">Получить код в Telegram</button></div>
+<div id="s0" class="{{PW}}"><input id="pw" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Пароль" style="letter-spacing:4px">
+<button onclick="pass()">Войти</button><button class="lnk" onclick="$('#s0').classList.add('hid');$('#s1').classList.remove('hid')">Войти по коду из Telegram</button></div>
+<div id="s1" class="{{CODE}}"><button id="get" onclick="getCode()">Получить код в Telegram</button></div>
 <div id="s2" class="hid"><input id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
 <button onclick="verify()">Войти</button><button class="lnk" onclick="getCode()">Отправить код ещё раз</button></div>
 <div class="err" id="err"></div></div>
@@ -111,10 +130,14 @@ async function getCode(){$("#err").textContent="";$("#get").disabled=true;
  const r=await fetch("/crm/code",{method:"POST"});const j=await r.json().catch(()=>({}));$("#get").disabled=false;
  if(!j.ok){$("#err").textContent=j.error||"Не получилось отправить код";return}
  $("#msg").textContent="Бот @aibusinessuzbot прислал вам 6-значный код. Введите его:";$("#s1").classList.add("hid");$("#s2").classList.remove("hid");$("#code").focus()}
+async function pass(){const password=$("#pw").value;if(!password){$("#pw").focus();return}
+ const r=await fetch("/crm/pass",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password})});const j=await r.json().catch(()=>({}));
+ if(j.ok){location.href="/crm"}else{$("#err").textContent=j.error||"Ошибка";$("#pw").select()}}
 async function verify(){const code=$("#code").value.trim();if(code.length<6){$("#code").focus();return}
  const r=await fetch("/crm/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code})});const j=await r.json().catch(()=>({}));
  if(j.ok){location.href="/crm"}else{$("#err").textContent=j.error||"Ошибка"}}
-document.addEventListener("keydown",e=>{if(e.key=="Enter"&&!$("#s2").classList.contains("hid"))verify()});
+document.addEventListener("keydown",e=>{if(e.key!="Enter")return;if(!$("#s0").classList.contains("hid"))pass();else if(!$("#s2").classList.contains("hid"))verify()});
+if(!$("#s0").classList.contains("hid"))$("#pw").focus();
 </script></body></html>"""
 
 

@@ -764,6 +764,15 @@ def command(chat_id, text):
         core.tg("sendMessage", {"chat_id": chat_id, "text": "🖥 Вход в CRM. Ссылка одноразовая и действует 10 минут, "
                                 "после входа браузер запомнит вас на 30 дней.\n\nОткройте на компьютере или телефоне 👇",
                                 "reply_markup": {"inline_keyboard": [[{"text": "Открыть CRM", "url": url}]]}})
+    elif cmd == "/crm_pass":
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            core.send_msg(chat_id, "Напишите так: /crm_pass ваш_пароль (минимум 4 символа)")
+        elif core.BILL.set_password(parts[1]):
+            core.send_msg(chat_id, "✅ Пароль для CRM установлен. Вход: " + core.IG.PUBLIC_URL + "/crm\n"
+                                   "Удалите сообщение с паролем из этого чата.")
+        else:
+            core.send_msg(chat_id, "Пароль слишком короткий — минимум 4 символа.")
     elif cmd == "/stats":
         core.send_msg(chat_id, text_summary("today"))
     elif cmd == "/month":
@@ -798,7 +807,7 @@ def handle_get(h):
 
 def handle_post(h, body):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
-    if path in ("/crm/code", "/crm/verify"):
+    if path in ("/crm/code", "/crm/verify", "/crm/pass"):
         return core.CRMWEB.handle_post(h, body)
     if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",
                     "/admin/api/expense", "/admin/api/bot", "/admin/api/history", "/admin/api/pay", "/admin/api/price",
