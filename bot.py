@@ -29,6 +29,8 @@ from socketserver import ThreadingMixIn
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DEMO_URL = os.environ.get("DEMO_URL", "https://sayt-production-f9ed.up.railway.app/demo")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+DB_TABLE = "".join(ch for ch in os.environ.get("DB_TABLE", "demo_bot_state") if ch.isalnum() or ch == "_") or "demo_bot_state"
+AGENT_MODE = os.environ.get("AGENT", "").strip().lower()   # alohida bot: butun bot shu mijoz agenti (masalan express)
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # Javoblar uchun model; ishlamasa ro'yxatdagi keyingisiga o'tadi
 MODELS = [m.strip() for m in os.environ.get(
@@ -247,7 +249,7 @@ def db_connect():
             user=urllib.parse.unquote(u.username or ""), password=urllib.parse.unquote(u.password or ""),
             host=u.hostname, port=u.port or 5432, database=(u.path or "/").lstrip("/") or "railway",
             timeout=15)
-        DB.run("CREATE TABLE IF NOT EXISTS demo_bot_state (k TEXT PRIMARY KEY, v TEXT NOT NULL, updated TIMESTAMPTZ DEFAULT now())")
+        DB.run("CREATE TABLE IF NOT EXISTS " + DB_TABLE + " (k TEXT PRIMARY KEY, v TEXT NOT NULL, updated TIMESTAMPTZ DEFAULT now())")
         print("DB connected")
     except Exception as e:
         print("DB connect error:", e)
@@ -263,7 +265,7 @@ def db_put(k, v):
     with DB_LOCK:
         for attempt in range(2):
             try:
-                DB.run("INSERT INTO demo_bot_state (k, v, updated) VALUES (:k, :v, now()) "
+                DB.run("INSERT INTO " + DB_TABLE + " (k, v, updated) VALUES (:k, :v, now()) "
                        "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated = now()", k=k, v=data)
                 return True
             except Exception as e:
@@ -277,7 +279,7 @@ def db_get(k):
         return None
     try:
         with DB_LOCK:
-            rows = DB.run("SELECT v FROM demo_bot_state WHERE k = :k", k=k)
+            rows = DB.run("SELECT v FROM " + DB_TABLE + " WHERE k = :k", k=k)
         return json.loads(rows[0][0]) if rows else None
     except Exception as e:
         print("DB read error:", e)
@@ -289,7 +291,7 @@ def db_delete(k):
         return False
     try:
         with DB_LOCK:
-            DB.run("DELETE FROM demo_bot_state WHERE k = :k", k=k)
+            DB.run("DELETE FROM " + DB_TABLE + " WHERE k = :k", k=k)
         return True
     except Exception as e:
         print("DB delete error:", e)
@@ -300,7 +302,7 @@ def load_state():
     global STATE
     if db_connect() is not None:
         try:
-            rows = DB.run("SELECT k, v FROM demo_bot_state WHERE updated > now() - interval '365 days'")
+            rows = DB.run("SELECT k, v FROM " + DB_TABLE + " WHERE updated > now() - interval '365 days'")
             for k, v in rows:
                 if k.startswith("chat:"):
                     STATE["chats"][k[5:]] = json.loads(v)
@@ -1389,7 +1391,7 @@ def respond(key, stamp=None):
             save_chat(key)
             return
         last = c["history"][-1]["t"] if c["history"] else ""
-        if c.get("channel") != "ig" and not c.get("agent") and is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
+        if c.get("channel") != "ig" and not c.get("agent") and not AGENT_MODE and is_from_site(last) and not any(h["r"] == "a" for h in c["history"]):
             biz_key = detect_business(last)
             if biz_key:
                 biz_name = next((b[0] for b in BUSINESSES if b[1] == biz_key), "Biznes")
@@ -1589,7 +1591,9 @@ def handle(update):
         chat = msg.get("chat", {})
         chat_id = chat.get("id")
         text = (msg.get("text") or "").strip()
-        if text.startswith("/start"):
+        if text.startswith("/start") and AGENT_MODE and not BOSS.is_admin_chat(chat_id):
+            text = "Assalomu alaykum"                      # mijoz botni ochdi — agent salomlashadi
+        elif text.startswith("/start"):
             send_msg(chat_id, "Bot ishlayapti! / Бот работает!\n\nSizning chat ID: " + str(chat_id))
             if str(chat_id) == str(REPORT_CHAT_ID):
                 ADMIN.panel_button(chat_id)
@@ -1612,6 +1616,16 @@ def handle(update):
             if reply:
                 send_msg(chat_id, reply)
             return
+        if chat.get("type") == "private" and not text and not (BOSS.is_admin_chat(chat_id) and not BOSS.test_mode()):
+            if msg.get("voice") or msg.get("audio") or msg.get("video_note"):
+                text = tg_voice_text(msg)
+            elif msg.get("contact"):
+                ct = msg["contact"]
+                text = f"{ct.get('first_name', '')} {ct.get('phone_number', '')}".strip()
+            elif msg.get("photo") or msg.get("document") or msg.get("video"):
+                text = "[клиент отправил файл/фото без подписи]"
+            elif msg.get("sticker"):
+                text = msg["sticker"].get("emoji") or "👍"
         if chat.get("type") == "private" and text and not (BOSS.is_admin_chat(chat_id) and not BOSS.test_mode()):
             on_client_message(chat_id, text, None, msg.get("from", {}))
         return
@@ -1636,6 +1650,9 @@ BOSS.init(sys.modules[__name__])
 BILL.init(sys.modules[__name__])
 CRMWEB.init(sys.modules[__name__])
 AGENTS.init(sys.modules[__name__])
+if AGENT_MODE and AGENTS.get(AGENT_MODE):
+    SYSTEM_PROMPT = AGENTS.get(AGENT_MODE)["prompt"]     # alohida bot rejimi: o'z bazasi va sotuv logikasi
+    print("Agent mode:", AGENT_MODE)
 STT.STATS_HOOK = lambda **kw: (stat(**kw), chat_cost(**kw))
 
 
