@@ -392,6 +392,13 @@ def tg(method, data):
 
 
 def send_msg(chat_id, text, bc_id=None):
+    if text.startswith("\x00venue:"):        # filial lokatsiyasi — Telegram xaritasi bilan
+        ll, title, addr = text[len("\x00venue:"):].split("|", 2)
+        lat, lon = ll.split(",")
+        data = {"chat_id": chat_id, "latitude": float(lat), "longitude": float(lon), "title": title, "address": addr}
+        if bc_id:
+            data["business_connection_id"] = bc_id
+        return tg("sendVenue", data)
     data = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     if text.startswith("<b>"):              # tayyor bloklar (filiallar, smenalar) — qalin sarlavha
         data["parse_mode"] = "HTML"
@@ -418,7 +425,7 @@ def send_human(chat_id, parts, bc_id=None):
 def deliver(c, parts):
     """Kanalga qarab yuborish: Telegram yoki Instagram"""
     if c.get("channel") == "ig":
-        IG.send_parts(c, [re.sub(r"</?b>", "", p) for p in parts])
+        IG.send_parts(c, [AGENTS.venue_text(p) if p.startswith(AGENTS.VENUE) else re.sub(r"</?b>", "", p) for p in parts])
     else:
         send_human(c["chat_id"], parts, c["bc_id"])
 
@@ -1332,7 +1339,7 @@ def ai_reply(key):
             deliver(c, out)
         with LOCK:
             for m in out:
-                c["history"].append({"r": "a", "t": re.sub(r"</?b>", "", m), "ts": time.time(), **({"voice": True} if voiced else {})})
+                c["history"].append({"r": "a", "t": AGENTS.venue_text(m) if m.startswith(AGENTS.VENUE) else re.sub(r"</?b>", "", m), "ts": time.time(), **({"voice": True} if voiced else {})})
         stat(chat_channel(c), replies=1, msgs_out=len(out), voice_out=int(bool(voiced)))
     with LOCK:
         for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):

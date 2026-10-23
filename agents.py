@@ -106,16 +106,17 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 - «7/10 дней» считаются по дням входа в приложение, не календарные: пропущенный день не тратится.
 - Перейти на тариф дороже — доплата только разницы (через администратора).
 ПРОБНЫЙ УРОК: бесплатно, один раз на человека, 2 часа доступа; записывает администратор (имя, телефон, филиал, смена). Пробный экзамен на сайте без регистрации: 20 самых сложных вопросов, 25 минут, не больше 2 ошибок.
-ЗАПИСЬ: заявка на сайте или имя+номер здесь → звонок за 15 минут в рабочее время → в филиале документы и первый взнос → логин в @ExpressSchoolbot. Документы: паспорт или ID-карта и ЖШШИР/ПИНФЛ (14 цифр, на обороте ID). Для «B»/«BC» ещё второй номер телефона близкого. Договор и документы для экзамена оформляет школа.
+ЗАПИСЬ: заявка на сайте или имя+номер здесь → звонок за 15 минут в рабочее время → в филиале документы и первый взнос → логин в @ExpressSchoolbot. Для оформления в филиале: паспорт или ID-карта и ЖШШИР/ПИНФЛ (14 цифр, на обороте ID). Для «B»/«BC» ещё второй номер телефона близкого. Договор и документы для экзамена оформляет школа.
+ДОКУМЕНТЫ ДЛЯ КАТЕГОРИИ «B» (что ученик собирает для получения прав / экзамена): 1) медсправка формы 083 (083 med spravka); 2) паспорт; 3) адрес проживания (yashash manzili); 4) фото 3×4. Спросили «какие документы нужны» — поставь "show": "documents" (программа отправит этот список), в messages — короткая фраза и, если нужно, вопрос.
 ВОЗРАСТ: учиться с 17 лет, права «B» — с 18 (экзамен после дня рождения).
-МЕДСПРАВКА: при записи не нужна, нужна к госэкзамену — школа скажет, когда и где.
+МЕДСПРАВКА: форма 083 — входит в документы для категории «B». Для записи на курс сразу приносить не обязательно; когда и где её получить — подскажет администратор.
 ОПЛАТА: наличные (чек сразу), карта, перевод, терминал (засчитывается после проверки чека), Uzum nasiya (оформляется в филиале за несколько минут). Платить, в том числе долг, можно в любом филиале. При оплате частями бот напоминает за 2 дня, накануне и в день оплаты; не оплачено — со следующего дня доступ закрыт, после оплаты откроется сам. Возврат денег — только через администратора, ничего не обещай.
 ПРИЛОЖЕНИЕ: своё, «как настоящий экзамен»: 1255 вопросов с картинками, 42 темы, билеты по 20 вопросов; реальный экзамен 20 вопросов / 25 минут / не больше 2 ошибок, на компьютере как AVTOTEST; работа над ошибками, шпаргалки, знаки, ПДД, автодром, Анализ AI, видео-разборы, статистика. Языки: узбекский (латиница и кириллица), русский, английский. Программа для Windows: expressschool.uz/pc.
 ЗАМОРОЗКА: только VIP и Premium, дни сохраняются, через администратора.
 НЕ СДАЛ: к пересдаче готовят бесплатно — доступ сохраняется, преподаватель разбирает ошибки.
 ПРЕПОДАВАТЕЛИ: на сайте с отзывами — Shohruh Holtoyev, Diyorbek Ochiliv, Azizbek Abdubakiyev, Johongir Zakirjanov, Muxutdinov Saidqodirbek, Fayzullayev Behruzbek, Xayrullayev Izzatilla, Abdulaziz Mansurov, Rasuljon Mahamadjonov, Bilol G'ulomjonov.
 
-ДОП. ПОЛЕ JSON: "show": "" | "branches" | "shifts" — какой готовый блок программа отправит перед твоим последним сообщением.
+ДОП. ПОЛЕ JSON: "show": "" | "branches" | "shifts" | "documents" — какой готовый блок программа отправит перед твоим последним сообщением.
 
 ПОЛЯ КАРТОЧКИ (для администратора)
 - business — кратко о клиенте: есть ли сертификат автошколы, регулярно ли ходил на занятия, возраст (если сказал), удобный филиал. need — что хочет: тариф/только теория/полный курс, смена. offer — предложенный тариф. budget — если назвал сумму.
@@ -141,32 +142,51 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 «ilova telegramda ochilmayapti» → ["Express 7 tarifida ilova faqat filial kompyuterida ishlaydi.", "To'liq kirish uchun 200 000 so'm qo'shimcha to'lov kifoya."]
 «qarzim bor, kirolmayapman» → ["Qarzni istalgan filialda to'lasangiz, kirish o'zi ochiladi.", "Savol bo'lsa: +998 55 055 05 02."]
 «17 yoshdaman» → ["17 yoshdan o'qishni boshlasa bo'ladi.", "Prava 18 yoshda — tug'ilgan kuningizdan keyin imtihon topshirasiz."]
-«qanday hujjat kerak» → ["Pasport yoki ID-karta va JSHSHIR kifoya.", "«B» yoki «BC» uchun yaqiningizning ikkinchi raqami ham kerak."]
+«qanday hujjat kerak» → ["Mana kerakli hujjatlar:", "Savol bo'lsa, bemalol yozing."] + "show": "documents"
 «sinab ko'rsam bo'ladimi» → ["Albatta, bepul sinov darsi bor — 2 soat, bir marta.", "Ismingiz va raqamingizni qoldirsangiz, administrator yozib qo'yadi."]
 «kerakmas» → ["Tushunarli, bemalol. Savol bo'lsa, istalgan vaqt yozing!"] (action=stop)"""
+
+
+# Filiallar — Telegram'da haqiqiy lokatsiya (sendVenue): xaritada nuqta, nom va manzil
+BRANCHES = [
+    {"lat": 41.312104, "lon": 69.253264, "uz_lat": ("Nest One (asosiy filial)", "Islom Karimov ko'chasi, Tashkent City yonida"),
+     "uz_cyr": ("Nest One (асосий филиал)", "Ислом Каримов кўчаси, Tashkent City ёнида"),
+     "ru": ("Nest One (главный филиал)", "ул. Ислама Каримова, рядом с Tashkent City")},
+    {"lat": 41.299752, "lon": 69.271304, "uz_lat": ("Oybek filiali", "Afrosiyob ko'chasi, Ming O'rik metrosi yonida"),
+     "uz_cyr": ("Ойбек филиали", "Афросиёб кўчаси, Минг Ўрик метроси ёнида"),
+     "ru": ("Филиал Ойбек", "ул. Афросиаб, у метро Минг Урик")},
+    {"lat": 41.275895, "lon": 69.203728, "uz_lat": ("Chilonzor filiali", "Kichik halqa yo'li, Chilonzor metrosi yonida"),
+     "uz_cyr": ("Чилонзор филиали", "Кичик ҳалқа йўли, Чилонзор метроси ёнида"),
+     "ru": ("Филиал Чиланзар", "Малая кольцевая дорога, у метро Чиланзар")},
+    {"lat": 41.32759, "lon": 69.328213, "uz_lat": ("Maksim Gorkiy filiali", "Mirzo Ulug'bek shoh ko'chasi, Buyuk Ipak Yo'li metrosi yonida"),
+     "uz_cyr": ("Максим Горький филиали", "Мирзо Улуғбек шоҳ кўчаси, Буюк Ипак Йўли метроси ёнида"),
+     "ru": ("Филиал Максим Горький", "пр. Мирзо Улугбека, у метро Буюк Ипак Йули")},
+]
+VENUE = "\x00venue:"
+
+
+def venue(b, script):
+    title, addr = b[script]
+    return f"{VENUE}{b['lat']},{b['lon']}|{title}|{addr}"
+
+
+def venue_text(part):
+    """Lokatsiya xabarining matn ko'rinishi (tarix, Instagram uchun)"""
+    ll, title, addr = part[len(VENUE):].split("|", 2)
+    return f"{title} — {addr}\nhttps://maps.google.com/?q={ll}"
 
 
 MAP = "https://maps.google.com/?q="
 EXPRESS_BLOCKS = {
     "branches": {
-        "uz_lat": [
-            "<b>Nest One</b> (asosiy filial)\nIslom Karimov ko'chasi, Tashkent City yonida. Metrodan 1 daqiqa.\n" + MAP + "41.312104,69.253264",
-            "<b>Oybek</b>\nAfrosiyob ko'chasi, Ming O'rik metrosi yonida. Metrodan 1 daqiqa.\n" + MAP + "41.299752,69.271304",
-            "<b>Chilonzor</b>\nKichik halqa yo'li, Chilonzor metrosi yonida. Metrodan 1 daqiqa.\n" + MAP + "41.275895,69.203728",
-            "<b>Maksim Gorkiy</b>\nMirzo Ulug'bek shoh ko'chasi, Buyuk Ipak Yo'li metrosi yonida. Metrodan 2 daqiqa.\n" + MAP + "41.32759,69.328213",
-        ],
-        "uz_cyr": [
-            "<b>Nest One</b> (асосий филиал)\nИслом Каримов кўчаси, Tashkent City ёнида. Метродан 1 дақиқа.\n" + MAP + "41.312104,69.253264",
-            "<b>Ойбек</b>\nАфросиёб кўчаси, Минг Ўрик метроси ёнида. Метродан 1 дақиқа.\n" + MAP + "41.299752,69.271304",
-            "<b>Чилонзор</b>\nКичик ҳалқа йўли, Чилонзор метроси ёнида. Метродан 1 дақиқа.\n" + MAP + "41.275895,69.203728",
-            "<b>Максим Горький</b>\nМирзо Улуғбек шоҳ кўчаси, Буюк Ипак Йўли метроси ёнида. Метродан 2 дақиқа.\n" + MAP + "41.32759,69.328213",
-        ],
-        "ru": [
-            "<b>Nest One</b> (главный филиал)\nУлица Ислама Каримова, рядом с Tashkent City. 1 минута от метро.\n" + MAP + "41.312104,69.253264",
-            "<b>Ойбек</b>\nУлица Афросиаб, у метро Минг Урик. 1 минута от метро.\n" + MAP + "41.299752,69.271304",
-            "<b>Чиланзар</b>\nМалая кольцевая дорога, у метро Чиланзар. 1 минута от метро.\n" + MAP + "41.275895,69.203728",
-            "<b>Максим Горький</b>\nПроспект Мирзо Улугбека, у метро Буюк Ипак Йули. 2 минуты от метро.\n" + MAP + "41.32759,69.328213",
-        ],
+        "uz_lat": [venue(b, "uz_lat") for b in BRANCHES],
+        "uz_cyr": [venue(b, "uz_cyr") for b in BRANCHES],
+        "ru": [venue(b, "ru") for b in BRANCHES],
+    },
+    "documents": {
+        "uz_lat": ["<b>«B» toifa uchun kerakli hujjatlar:</b>\n1. 083 shakldagi tibbiy ma'lumotnoma (med spravka)\n2. Pasport\n3. Yashash manzili\n4. 3×4 rasm"],
+        "uz_cyr": ["<b>«B» тоифа учун керакли ҳужжатлар:</b>\n1. 083 шаклдаги тиббий маълумотнома (мед справка)\n2. Паспорт\n3. Яшаш манзили\n4. 3×4 расм"],
+        "ru": ["<b>Документы для категории «B»:</b>\n1. Медсправка формы 083\n2. Паспорт\n3. Адрес проживания\n4. Фото 3×4"],
     },
     "shifts": {
         "uz_lat": ["<b>Smenalar</b> (dushanba–shanba, har biri 2 soat):\n<b>1-smena</b> — 09:00–11:00\n<b>2-smena</b> — 11:00–13:00\n"
