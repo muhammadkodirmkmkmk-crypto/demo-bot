@@ -591,6 +591,8 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
                       {"type": "text", "text": system}]
     else:
         sys_blocks = system
+    if messages and messages[-1].get("role") == "assistant":   # yangi modellar "prefill"ni qabul qilmaydi
+        messages = messages + [{"role": "user", "content": "[СИСТЕМА] Продолжи диалог по правилам и верни JSON."}]
     models = [model] if model else ([WORKING_MODEL["name"]] if WORKING_MODEL["name"] else []) + \
         [m for m in MODELS if m != WORKING_MODEL["name"]]
     for m in models:
