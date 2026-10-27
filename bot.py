@@ -52,6 +52,8 @@ TYPING_DELAY = os.environ.get("TYPING_DELAY", "1") != "0"
 DEBOUNCE_SEC = float(os.environ.get("DEBOUNCE_SEC", "6"))
 HUMAN_PAUSE_HOURS = float(os.environ.get("HUMAN_PAUSE_HOURS", "12"))
 FOLLOWUP_MINUTES = [int(x) for x in os.environ.get("FOLLOWUP_MINUTES", "20,180,1260").split(",") if x.strip()]
+FOLLOWUP_SINGLE_MIN = int(os.environ.get("FOLLOWUP_SINGLE_MIN", "60"))   # mijoz faqat 1 marta yozgan bo'lsa — bitta eslatma
+IGNORE_MIN_MSGS = int(os.environ.get("IGNORE_MIN_MSGS", "3"))            # bola/hazil/spam: kamida shuncha xabardan keyin jim
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 MAX_MSG_CHARS = int(os.environ.get("MAX_MSG_CHARS", "170"))
 MAX_REPLY_CHARS = int(os.environ.get("MAX_REPLY_CHARS", "320"))
@@ -119,6 +121,7 @@ SYSTEM_PROMPT = """Ты — вежливый, тёплый менеджер по
 - В ответе максимум ОДИН вопрос, в последнем сообщении.
 - Без списков, «✅», markdown, рекламных штампов. Эмодзи — максимум один.
 - ВСЕГДА отвечай на то, что клиент спросил/попросил. Несколько сообщений подряд — ответь на все вместе одним ответом.
+- Клиент написал коротко («crm kerak», «sayt», «narxi?») — отвечай так же коротко: цена, если спросил, и ОДИН уточняющий вопрос. Не перечисляй возможности и не рассказывай всё о продукте, пока он не ответил.
 
 ПЕРВЫЙ ОТВЕТ (ты ещё ничего не писал) — 3 сообщения:
 1) «Assalomu alaykum!» / «Здравствуйте!»; 2) «Ishlaringiz yaxshimi?» / «Как ваши дела?»; 3) лёгкое уточнение его вопроса (не весь ответ).
@@ -138,7 +141,8 @@ SYSTEM_PROMPT = """Ты — вежливый, тёплый менеджер по
 7. Цель — бесплатная консультация: номер телефона и удобное время. Если номер и время уже даны — НЕ переспрашивай: «Rahmat! Menejerimiz bugun qo'ng'iroq qiladi.»
 8. Отказ / «не пишите» — вежливо попрощайся, action="stop".
 9. Просит живого человека, жалуется, сложный технический вопрос — «подключаю менеджера», action="handoff".
-10. Посторонние вопросы и шутки — естественно, 1 фразой, с улыбкой. «Ты бот?» — честно: ИИ-помощник компании, можешь подключить менеджера.
+10. Посторонние вопросы и шутки — естественно, 1 фразой, с улыбкой.
+11. ДЕТИ, ШУТНИКИ, СПАМ. Если клиент написал уже 3–4 сообщения и ЯВНО видно, что это ребёнок балуется или человек просто играется (бессмыслица, набор букв, только смайлы/стикеры, одно и то же «salom» по кругу, оскорбления, просит поиграть / сделать домашку / «ты кто, а сколько тебе лет», пишет что он школьник, не отвечает ни на один вопрос о бизнесе) — верни action="ignore" и messages = []. Бот молча перестанет отвечать. Если есть хоть какое-то сомнение, что это реальный клиент (коротко пишет, плохо знает узбекский/русский, спросил цену, назвал бизнес) — отвечай как обычно. «Ты бот?» — честно: ИИ-помощник компании, можешь подключить менеджера.
 
 НОМЕР ТЕЛЕФОНА — БЕЗ НАВЯЗЧИВОСТИ
 - Проси номер только когда клиент проявил интерес: обсуждает услугу/цену, согласен на звонок или сам просит связаться.
@@ -156,7 +160,8 @@ SYSTEM_PROMPT = """Ты — вежливый, тёплый менеджер по
 - Только факты и цены из БАЗЫ. Никаких выдуманных цифр: диапазонов цен, стоимости сервера/API, «в 10 раз», процентов, сроков в днях (кроме «лендинг — обычно несколько дней»), скидок, акций, рассрочки, гарантий, кейсов. Числа клиента (бюджет, время звонка, кол-во сотрудников) повторять можно.
 
 ФОРМАТ — только один JSON-объект:
-{"messages": ["...", "..."], "readiness": 0, "stage": "greeting|discovery|offer|objection|closing|lead|lost", "action": "none|lead|stop|handoff", "name": "", "phone": "", "business": "", "need": "", "current_tool": "", "budget": "", "offer": "", "objection": "", "call_time": "", "note": ""}
+{"messages": ["...", "..."], "readiness": 0, "stage": "greeting|discovery|offer|objection|closing|lead|lost", "action": "none|lead|stop|handoff|ignore", "name": "", "phone": "", "business": "", "need": "", "current_tool": "", "budget": "", "offer": "", "objection": "", "call_time": "", "note": ""}
+- action="ignore" — только для ребёнка/шутника/спама (см. п. 11), messages пустой, в note — почему.
 - readiness 0–100: 0–20 интересуется; 30–50 рассказал бизнес и боль; 60–75 обсуждает услугу/цену/бюджет, согласен на консультацию; 80–100 дал телефон / готов платить.
 - action="lead" — дал телефон или явно согласился на звонок/покупку.
 - Поля заполняй, когда узнал (иначе ""). note — 1 фраза на русском для менеджера.
@@ -221,6 +226,9 @@ FOLLOWUP_INSTR = """Клиент не ответил на твоё послед�
 {stage}
 Нельзя повторять уже заданные вопросы и прошлые формулировки. Нельзя выдумывать факты, цифры, скидки.
 Ответ — только текст сообщения, без кавычек и пояснений."""
+
+FOLLOWUP_SINGLE_STAGE = ("Клиент написал всего одно сообщение и больше не отвечал. Это ЕДИНСТВЕННОЕ напоминание: "
+                         "одной фразой мягко вернись к его запросу (своими словами) и скажи, что можно написать в любое время. Без вопросов-допросов.")
 
 FOLLOWUP_STAGES = [
     "Лёгкое напоминание: вернись к тому месту, где остановились, другими словами.",
@@ -1209,6 +1217,13 @@ def generate_reply(c, script, model=None):
         out = [render(m, script) for m in raw_msgs]
         d["messages"] = out
         problems = []
+        n_client = sum(1 for h in c["history"] if h["r"] == "u")
+        if str(d.get("action") or "") == "ignore":
+            if n_client >= IGNORE_MIN_MSGS:
+                d["messages"] = []
+                return d                            # bola/hazil/spam — jim turamiz
+            problems.append("Рано решать, что это шутник: клиент написал мало сообщений. Ответь ему нормально, action=\"none\".")
+            d["action"] = "none"
         nums = sorted({n for m in out for n in bad_numbers(m, c["history"], c)})
         if nums:
             problems.append("Убери выдуманные числа " + ", ".join(nums) + " — их нет в базе.")
@@ -1224,7 +1239,7 @@ def generate_reply(c, script, model=None):
             problems.append("Только один вопрос в ответе.")
         if first and len(out) < 2:
             problems.append("Первый ответ — 3 коротких сообщения: приветствие, как дела, уточнение.")
-        if not out:
+        if not out and not problems:
             problems.append("Ответ не распознан. Верни строго один валидный JSON-объект без лишнего текста.")
         wp = wrong_prices(" ".join(raw_msgs))
         if wp:
@@ -1327,6 +1342,15 @@ def ai_reply(key):
         typing(c["chat_id"], c["bc_id"])
     d = generate_reply(c, script) or {"messages": []}
     out = d.get("messages") or []
+    if str(d.get("action") or "") == "ignore":
+        with LOCK:
+            c["status"] = "ignored"
+            note = str(d.get("note") or "").strip()
+            if note:
+                c["facts"]["note"] = note[:200]
+        print("Chat ignored (kid/prank/spam):", key)
+        send_report(c, "🧒 Похоже на ребёнка / шутку — бот перестал отвечать")
+        return
     if not out and not c.get("error_reported"):
         c["error_reported"] = True
         send_report(c, "⚠️ Бот не смог сформулировать ответ — ответьте клиенту вручную")
@@ -1417,6 +1441,8 @@ def record_client(chat_id, text, bc_id, sender):
         c["followups"] = 0
         if c["status"] == "stopped":
             c["status"] = "active"
+        elif c["status"] == "ignored" and PHONE_RE.search(text):   # telefon yozsa — demak jiddiy, yana javob beramiz
+            c["status"] = "active"
     stat(chat_channel(c), msgs_in=1, new_chats=int(new), voice_in=int(text.startswith(STT.VOICE_PREFIX)))
     if new:
         try:
@@ -1449,7 +1475,7 @@ def respond(key, stamp=None):
                 with LOCK:
                     c["facts"].setdefault("business", biz_name)
                     c["demo_sent"] = True
-        if AI_REPLIES and c["status"] != "handoff":
+        if AI_REPLIES and c["status"] not in ("handoff", "ignored"):
             ai_reply(key)
         save_chat(key)
 
@@ -1494,17 +1520,25 @@ def quiet_now(ts):
     return h >= QUIET_FROM or h < QUIET_TO
 
 
+def followup_plan(c):
+    """Mijoz faqat bir marta yozgan bo'lsa — bitta eslatma; aks holda to'liq jadval"""
+    if sum(1 for h in c["history"] if h["r"] == "u") <= 1:
+        return [FOLLOWUP_SINGLE_MIN]
+    return FOLLOWUP_MINUTES
+
+
 def due_followup(c, now):
     if not AI_REPLIES or c["status"] != "active" or not c.get("chat_id"):
         return False
-    if c["paused_until"] > now or c["followups"] >= len(FOLLOWUP_MINUTES):
+    plan = followup_plan(c)
+    if c["paused_until"] > now or c["followups"] >= len(plan):
         return False
     h = c["history"]
     if not h or h[-1]["r"] != "a":
         return False
     if now - c["last_client"] > TG_WINDOW:
         return False
-    if now - c["last_client"] < FOLLOWUP_MINUTES[c["followups"]] * 60:
+    if now - c["last_client"] < plan[c["followups"]] * 60:
         return False
     if quiet_now(now):
         return False
@@ -1520,8 +1554,12 @@ def send_followup(key):
         CTX.ch = chat_channel(c)
         CTX.chat = c
         n = c["followups"] + 1
-        total = len(FOLLOWUP_MINUTES)
-        stage = FOLLOWUP_STAGES[-1] if n >= total else FOLLOWUP_STAGES[min(n - 1, len(FOLLOWUP_STAGES) - 2)]
+        plan = followup_plan(c)
+        total = len(plan)
+        if plan is not FOLLOWUP_MINUTES:
+            stage = FOLLOWUP_SINGLE_STAGE
+        else:
+            stage = FOLLOWUP_STAGES[-1] if n >= total else FOLLOWUP_STAGES[min(n - 1, len(FOLLOWUP_STAGES) - 2)]
         script = client_script(c)
         dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + FOLLOWUP_INSTR.format(n=n, total=total, stage=stage) + BOSS.rules_block(c)
         msgs = model_history(c, script)
