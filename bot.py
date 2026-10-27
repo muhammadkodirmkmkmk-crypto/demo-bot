@@ -1157,8 +1157,13 @@ def generate_reply(c, script, model=None):
     msgs = model_history(c, script)
     if not msgs:
         return None
-    mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: 3 сообщения — приветствие; как дела; лёгкое уточнение его вопроса."
-            if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
+    agent = is_agent_chat(c)
+    if agent:                                   # mijoz agenti: batafsilroq va jonli javoblar
+        mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: приветствие; как дела; затем по-человечески ответь на его вопрос (всего 3–4 сообщения)."
+                if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1–3 сообщения: отвечай полно и по-человечески, как живой администратор.")
+    else:
+        mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: 3 сообщения — приветствие; как дела; лёгкое уточнение его вопроса."
+                if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
     dyn = SCRIPT_HINT[script] + "\n\n" + facts_block(c) + "\n\n" + mode + BOSS.rules_block(c)
     if client_used_voice(c) and STT.tts_enabled():
         dyn += ("\n\nКлиент прислал голосовое. Твой ответ будет озвучен и отправлен голосовым — не пиши, что умеешь только текстом.\n"
@@ -1196,7 +1201,7 @@ def generate_reply(c, script, model=None):
             for part in re.split(r"\s*\n+\s*", str(m)):      # Haiku ba'zan ikki xabarni bittaga qo'shadi
                 if part.strip():
                     raw_msgs.append(clean_text(part))
-        limit = 3 if first else 2
+        limit = (4 if first else 3) if agent else (3 if first else 2)
         if len(raw_msgs) > limit:
             raw_msgs = raw_msgs[:limit - 1] + [" ".join(raw_msgs[limit - 1:])]
         raw_msgs = [m for m in raw_msgs if m and not looks_like_service_text(m)]
@@ -1210,8 +1215,10 @@ def generate_reply(c, script, model=None):
         reps = [m for m in raw_msgs if is_repeat(m, c["history"])]
         if reps:
             problems.append("Ты повторяешь уже сказанное: «" + reps[0] + "». Скажи по-другому и двигай разговор дальше.")
-        k = 1.7 if is_agent_chat(c) else 1          # mijoz agenti: narxlar ro'yxati uzunroq bo'lishi mumkin
-        if sum(len(m) for m in out) > MAX_REPLY_CHARS * k or any(len(m) > MAX_MSG_CHARS * k for m in out):
+        if agent:                                   # mijoz agenti: batafsil tushuntirishga ruxsat
+            if sum(len(m) for m in out) > 900 or any(len(m) > 340 for m in out):
+                problems.append("Слишком длинно. Каждое сообщение — до 3 предложений (~40 слов), всего до 3 сообщений.")
+        elif sum(len(m) for m in out) > MAX_REPLY_CHARS or any(len(m) > MAX_MSG_CHARS for m in out):
             problems.append("Слишком длинно. Каждое сообщение до 16 слов, всего 1-2 сообщения.")
         if sum(m.count("?") for m in out) > (2 if first else 1):
             problems.append("Только один вопрос в ответе.")
@@ -1247,7 +1254,7 @@ def generate_reply(c, script, model=None):
     if ag:
         out = [AGENTS.fix_text(ag, m) for m in out]
     out = [m for m in out if m and not is_repeat(m, c["history"], 0.9) and not looks_like_service_text(m)]
-    out = out[:3] if first else out[:2]
+    out = out[:limit]
     data["messages"] = out
     if not out and FALLBACK_MODEL and model != FALLBACK_MODEL and WORKING_MODEL["name"] != FALLBACK_MODEL:
         print("Reply empty — retrying with", FALLBACK_MODEL)
