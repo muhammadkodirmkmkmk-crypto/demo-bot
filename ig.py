@@ -332,7 +332,7 @@ def on_webhook(payload):
             if not t.get("enabled", True):
                 core.save_chat(key)
                 continue
-            if not is_own(t) and not t.get("kb"):
+            if not is_own(t) and not t.get("kb") and not core.AGENTS.for_ig_tenant(t.get("ig_id")):
                 core.save_chat(key)
                 notify_admin(f"⚠️ Instagram @{t.get('username')}: пришло сообщение, но база знаний не заполнена — бот молчит.\n"
                              f"Заполните: /ig_kb {t['ig_id']} | Название компании\\nописание, услуги, цены")
@@ -390,7 +390,8 @@ def finish_oauth(code):
     notify_admin(f"✅ Instagram подключён: @{t['username']} (id {ig_id})\n"
                  f"Подписка на сообщения: {'да' if t['subscribed'] else 'НЕТ — ' + json.dumps(sub)[:200]}\n"
                  + ("Это наш аккаунт — бот уже отвечает." if is_own(t) else
-                    f"Заполните базу знаний: /ig_kb {ig_id} | Название компании\\nуслуги, цены, адрес, график"))
+                    f"Если это клиент с готовым агентом — привяжите: /agent_ig <код агента> {t.get('username') or ig_id} (агенты: /agents).\n"
+                    f"Иначе заполните базу знаний: /ig_kb {ig_id} | Название компании\\nуслуги, цены, адрес, график"))
     return t, None
 
 
