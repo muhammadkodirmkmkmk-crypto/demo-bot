@@ -337,7 +337,7 @@ def remote_ig_chats():
         return {}
     if time.time() - REMOTE["t"] < 60:
         return REMOTE["chats"]
-    out = {}
+    out, tid = {}, ""
     try:
         if core.db_connect() is not None:
             with core.DB_LOCK:
@@ -354,6 +354,8 @@ def remote_ig_chats():
     except Exception as e:
         print("Remote IG chats error:", e)
         return REMOTE["chats"]
+    if len(out) != len(REMOTE["chats"]) or not REMOTE["t"]:
+        print(f"Remote IG chats: {len(out)} (table {MAIN_DB_TABLE}, tenant {tid or 'не привязан'})")
     REMOTE.update(t=time.time(), chats=out)
     return out
 
