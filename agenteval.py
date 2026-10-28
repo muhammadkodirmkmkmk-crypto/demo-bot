@@ -54,6 +54,8 @@ SCRIPT_DESC = {"uz_lat": "узбекский ЛАТИНИЦЕЙ (как пишу
 
 JUDGE_SYS = """Ты — строгий проверяющий ответов ИИ-администратора автошколы Express School. Выше — его база знаний и правила.
 Тебе дают последние сообщения клиента и ОТВЕТ бота. Оцени ТОЛЬКО ответ бота.
+ВАЖНО: если клиент пишет кириллицей — ответ узбекской КИРИЛЛИЦЕЙ правильный, это НЕ ошибка; не предлагай переписать его латиницей.
+Не добавляй в spelling пары, где «правильно» совпадает с написанным или где ты просто хвалишь.
 Найди:
 1) ОРФОГРАФИЯ узбекского (латиница или кириллица): неправильные слова, русизмы, кальки, неверные апострофы (o', g'),
    неверная кириллица (ў, қ, ғ, ҳ), смешение алфавитов. Для каждой ошибки — пара [как написал бот, как правильно].
@@ -103,7 +105,10 @@ def _judge(slug, client_msgs, reply):
     user = ("КЛИЕНТ: " + " / ".join(client_msgs)[-600:] + "\n\nОТВЕТ БОТА:\n" + "\n".join(reply))
     d = _json(core.claude(JUDGE_SYS, [{"role": "user", "content": user}], max_tokens=600, model=MODEL,
                           cache_prefix=core.AGENTS.prompt(slug)))
-    sp = [x for x in (d.get("spelling") or []) if isinstance(x, list) and len(x) == 2 and str(x[0]).strip() != str(x[1]).strip()]
+    cyr = re.compile(r"[А-Яа-яЎўҚқҒғҲҳ]")
+    sp = [x for x in (d.get("spelling") or []) if isinstance(x, list) and len(x) == 2 and str(x[0]).strip() != str(x[1]).strip()
+          and not re.search(r"(?i)\(?(to'g'ri|тўғри|верно|ок|ok|правильно)\)?\s*$", str(x[1]))
+          and not (cyr.search(str(x[0])) and not cyr.search(str(x[1])))]          # kirill -> lotin «tuzatish» — xato emas
     try:
         score = int(d.get("score") or 0)
     except Exception:

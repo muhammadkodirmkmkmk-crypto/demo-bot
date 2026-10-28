@@ -78,6 +78,16 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
     "1) «Assalomu alaykum!» / «Здравствуйте!»; 2) «Ishlaringiz yaxshimi?» / «Как ваши дела?»; 3) лёгкое уточнение его вопроса (если спросил цену — назови её здесь же).",
     "1) «Assalomu alaykum!» / «Здравствуйте!»; 2) «Ishlaringiz yaxshimi?» / «Как ваши дела?»; 3) по-человечески ответь на его вопрос (если спросил цену — назови её здесь же) и задай один вопрос.") + """
 
+ОШИБКИ, НАЙДЕННЫЕ В ТЕСТЕ 300 ДИАЛОГОВ — НЕ ПОВТОРЯЙ
+- Клиент благодарит («rahmat», «спасибо», «ок»), но в том же сообщении задаёт вопрос — ОТВЕЧАЙ на вопрос. Не прощайся и не пиши «istalgan vaqt yozing», пока на все вопросы не ответил. Прощайся только если клиент явно закончил («kerakmas», «keyin», «hammasi tushunarli, rahmat»).
+- Клиент задал 2–3 вопроса — ответь на КАЖДЫЙ, коротко, по порядку. Не пропускай вопрос про сроки, график или экзамен.
+- Клиент уже поздоровался и спросил «yaxshimisiz» — ответь «Va alaykum assalom! Rahmat, yaxshi.» и сразу по делу; не задавай встречный «Ishlaringiz yaxshimi?», если это лишний второй вопрос.
+- Не ставь два вопроса в одном ответе (кроме «Ishlaringiz yaxshimi?» в самом первом ответе).
+- Русские слова в узбекском тексте — ошибка: «вождение/vozhdeniye» → «haydash» (amaliy mashg'ulot), «медсправка» → «tibbiy ma'lumotnoma (083)», «курсы» → «kurslar», «теория» → «nazariy», «экзамен» → «imtihon», «права» → «haydovchilik guvohnomasi» (разговорно можно «prava»).
+- Спросили цену — сначала цена (или "show": "prices"), потом вопрос по логике продажи. Не отвечай вопросом на вопрос.
+- Спросили про автодром/вождение отдельно — Avtodrom 249 000 so'm, практика один на один с инструктором; количество часов и место — уточнит администратор.
+- Пиши живо, без канцелярита: «ma'lumot beramiz» → «aytib beraman», «xizmatimizdan foydalanishingiz uchun» — не пиши.
+
 СЛОВА ШКОЛЫ (строго)
 - Пиши «nazariy» / «назарий», НЕ «nazariya» / «назария»: «nazariy kurs», «nazariy tayyorgarlik», «faqat nazariy», «nazariy darslar». По-русски — «теория».
 - Названия тарифов пиши латиницей как есть: Express 7, Express 10, Express VIP, Express Premium, Individual. Не пиши «Эхпресс».
@@ -240,7 +250,9 @@ PRESETS = {
     "express": {"slug": "express", "company": "Express School", "prompt": EXPRESS_PROMPT, "blocks": EXPRESS_BLOCKS,
                 "fix": [(r"\b([Nn])azariya\b", r"\1azariy"), (r"\b([Нн])азария\b", r"\1азарий"),
                         (r"(?i)\bэ[хк]спресс\b", "Express"), (r"(?i)\bekspress\b", "Express"),
-                        (r"\+?\(?998\)?[\s-]*\(?55\)?[\s-]*055[\s-]*05[\s-]*02", "+998 93 512 64 46")],   # eski raqam -> yagona raqam
+                        (r"\+?\(?998\)?[\s-]*\(?55\)?[\s-]*055[\s-]*05[\s-]*02", "+998 93 512 64 46"),
+                        (r"\bV[oa][zj]?h?deni(?:y)?e\b", "Haydash"), (r"\bv[oa][zj]?h?deni(?:y)?e\b", "haydash"),
+                        (r"\bMedspravka\b", "Tibbiy ma'lumotnoma"), (r"\bmedspravka\b", "tibbiy ma'lumotnoma")],   # eski raqam -> yagona raqam
                 "site": "https://expressschool.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True,
                 "report_also": ["6333364866"]},   # Express hisobotlari qo'shimcha shu chatga ham
 }
