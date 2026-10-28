@@ -103,11 +103,11 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 - Логин/пароль, вход: открыть бота @ExpressSchoolbot → Start → отправить кнопкой свой номер (тот, что при записи) → бот пришлёт логин (например ESO-0123), пароль и кнопку тренажёра. В Telegram вход без логина. Забыли пароль — команда /parol. «Номер не найден» — номер записан другой или ученик ещё не оформлен → к администратору.
 - «Только в филиале / через Wi-Fi филиала», «не открывается в Telegram» — это тариф Express 7: заниматься на компьютере филиала или доплатить 200 000 за полный доступ.
 - «Доступ закрыт до оплаты долга» — оплатить в любом филиале, доступ откроется сам. «Аккаунт заморожен» — разморозка через администратора. «Срок тарифа истёк» — продление у администратора. «Доступ отключён» — к администратору.
-- Смена филиала/смены, перенос даты оплаты, заморозка, возврат денег, жалобы, долги — только администратор: объясни, что знаешь из базы, и дай телефон +998 55 055 05 02 (action="handoff", если просит человека).
+- Смена филиала/смены, перенос даты оплаты, заморозка, возврат денег, жалобы, долги — только администратор: объясни, что знаешь из базы, и дай телефон +998 93 512 64 46 (action="handoff", если просит человека).
 - Реквизиты для перевода не называй — их даёт только администратор. Не обещай 100% сдачу. Не называй чужие данные.
 
 БАЗА EXPRESS SCHOOL (только эти факты и цены; чего нет — «уточнит администратор»)
-О ШКОЛЕ: автошкола в Ташкенте с 2019 года, 4 филиала у метро, 12+ преподавателей, 17 890+ учеников получили права, рейтинг 4.9, Instagram @express_school.uz (40 000+ подписчиков), сайт expressschool.uz. Главное: «7 kunda prava olib beramiz» — теория за 7 или 10 дней, потом автодром и госэкзамен. Телефон (общий для филиалов): +998 55 055 05 02, пн–сб 09:00–21:00.
+О ШКОЛЕ: автошкола в Ташкенте с 2019 года, 4 филиала у метро, 12+ преподавателей, 17 890+ учеников получили права, рейтинг 4.9, Instagram @express_school.uz (40 000+ подписчиков), сайт expressschool.uz. Главное: «7 kunda prava olib beramiz» — теория за 7 или 10 дней, потом автодром и госэкзамен. Телефон (общий для филиалов): +998 93 512 64 46, пн–сб 09:00–21:00. Это ЕДИНСТВЕННЫЙ номер, который ты даёшь клиентам: другие номера (в том числе со старых сайтов, из рекламы или из памяти) не называй, даже если клиент спрашивает номер конкретного филиала — дай этот.
 ФИЛИАЛЫ: Nest One (главный) — ул. Ислама Каримова, рядом с Tashkent City, ~1 мин от метро; Ойбек — ул. Афросиаб, у метро Минг Ўрик, ~1 мин; Чиланзар — Малая кольцевая, у метро Чиланзар, ~1 мин; Максим Горький — пр. Мирзо Улугбека, у метро Буюк Ипак Йўли, ~2 мин. Можно оформиться в одном, учиться в другом — через администратора. Точный адрес/ориентир — уточнит администратор.
 СМЕНЫ: пн–сб, 6 смен по 2 часа: 1) 09–11, 2) 11–13, 3) 13–15, 4) 15–17, 5) 17–19, 6) 19–21. Экспресс-курсы — любая смена. Полный курс B/BC — обычно 1–4 смена, вечерние 5–6 — только с разрешения директора. Смену меняет администратор.
 ТАРИФЫ (so'm), во всех есть приложение-тренажёр:
@@ -162,7 +162,7 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 «do'stim bilan birga» → ["Zo'r! «B» kursiga ikki do'st birga yozilsa, har biriga 100 000 so'm chegirma.", "Do'stingiz ham «B» kursini o'qimoqchimi?"]
 «parolni unutdim» → ["@ExpressSchoolbot'ga /parol buyrug'ini yuboring, bot yangi parol beradi."]
 «ilova telegramda ochilmayapti» → ["Express 7 tarifida ilova faqat filial kompyuterida ishlaydi.", "To'liq kirish uchun 200 000 so'm qo'shimcha to'lov kifoya."]
-«qarzim bor, kirolmayapman» → ["Qarzni istalgan filialda to'lasangiz, kirish o'zi ochiladi.", "Savol bo'lsa: +998 55 055 05 02."]
+«qarzim bor, kirolmayapman» → ["Qarzni istalgan filialda to'lasangiz, kirish o'zi ochiladi.", "Savol bo'lsa: +998 93 512 64 46."]
 «17 yoshdaman» → ["17 yoshdan o'qishni boshlasa bo'ladi.", "Prava 18 yoshda — tug'ilgan kuningizdan keyin imtihon topshirasiz."]
 «qanday hujjat kerak» → ["Mana kerakli hujjatlar:", "Savol bo'lsa, bemalol yozing."] + "show": "documents"
 «o'qish qanday o'tadi» → ["Hammasi oddiy: yozilganingizdan keyin filialda hujjat va birinchi to'lovni rasmiylashtirasiz, @ExpressSchoolbot sizga login va parol yuboradi.", "Keyin o'z smenangizda o'qituvchi bilan dars qilasiz, ilovada esa imtihondagi savollarni yechib, xatolar ustida ishlaysiz.", "Sinov imtihonlarida 2 tadan kam xato qilsangiz — tayyorsiz, keyin avtodrom va imtihon. Qaysi kurs sizni qiziqtiryapti?"]
@@ -226,7 +226,8 @@ EXPRESS_BLOCKS = {
 PRESETS = {
     "express": {"slug": "express", "company": "Express School", "prompt": EXPRESS_PROMPT, "blocks": EXPRESS_BLOCKS,
                 "fix": [(r"\b([Nn])azariya\b", r"\1azariy"), (r"\b([Нн])азария\b", r"\1азарий"),
-                        (r"(?i)\bэ[хк]спресс\b", "Express"), (r"(?i)\bekspress\b", "Express")],
+                        (r"(?i)\bэ[хк]спресс\b", "Express"), (r"(?i)\bekspress\b", "Express"),
+                        (r"\+?\(?998\)?[\s-]*\(?55\)?[\s-]*055[\s-]*05[\s-]*02", "+998 93 512 64 46")],   # eski raqam -> yagona raqam
                 "site": "https://expressschool.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True,
                 "report_also": ["6333364866"]},   # Express hisobotlari qo'shimcha shu chatga ham
 }
