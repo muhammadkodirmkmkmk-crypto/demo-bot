@@ -223,8 +223,21 @@ def staff_view(d):
         x["facts"] = {k: v for k, v in x["facts"].items() if k != "budget"}
         crm.append(x)
     calls = [{k: v for k, v in x.items() if k != "budget"} for x in d["calls"]]
+    proc = {ch: {k: v for k, v in p.items() if k != "revenue"} for ch, p in d["proc"].items()}
+    needs = {}
+    for x in d["leads"]:
+        n = (x["facts"].get("offer") or x["facts"].get("need") or "").strip()[:60]
+        if n:
+            needs[n] = needs.get(n, 0) + 1
+    f = d["funnel"]
     return {"role": "staff", "period": d["period"], "generated": d["generated"], "calls": calls, "crm": crm,
-            "pipe": d["pipe"], "ch_names": d["ch_names"]}
+            "pipe": d["pipe"], "ch_names": d["ch_names"], "company": core.AGENTS.name(core.AGENT_MODE) if core.AGENT_MODE else "",
+            "funnel": f, "proc": proc, "funnel_steps": [("wrote", "Написали"), ("answered", "Бот ответил"), ("warm", "Заинтересовались"),
+                                                        ("hot", "Горячие"), ("lead", "Оставили контакт"), ("won", "Записались")],
+            "daily": [{k: v for k, v in x.items() if k != "cost"} for x in d["daily"]],
+            "totals": {"dialogs": d["totals"]["dialogs"], "leads": d["totals"]["leads"], "won": d["totals"]["won"],
+                       "hot": sum(f[c]["hot"] for c in f)},
+            "needs": sorted(needs.items(), key=lambda x: -x[1])[:10]}
 
 # --------------------------------------------------------------------------
 # Ma'lumot yig'ish
@@ -314,10 +327,43 @@ def funnel_flags(c):
             "warm": warm, "hot": hot, "lead": lead, "won": won}
 
 
+REMOTE = {"t": 0, "chats": {}}
+MAIN_DB_TABLE = "".join(ch for ch in os.environ.get("MAIN_DB_TABLE", "demo_bot_state") if ch.isalnum() or ch == "_")
+
+
+def remote_ig_chats():
+    """Alohida mijoz botida: shu agentning Instagram suhbatlari asosiy bot jadvalidan (faqat o'qish, 60 s kesh)"""
+    if not core.AGENT_MODE or not MAIN_DB_TABLE or MAIN_DB_TABLE == core.DB_TABLE:
+        return {}
+    if time.time() - REMOTE["t"] < 60:
+        return REMOTE["chats"]
+    out = {}
+    try:
+        if core.db_connect() is not None:
+            with core.DB_LOCK:
+                rows = core.DB.run("SELECT v FROM " + MAIN_DB_TABLE + " WHERE k = 'agents'")
+                tid = str(((json.loads(rows[0][0]) if rows else {}).get(core.AGENT_MODE) or {}).get("ig_tenant") or "")
+                if tid:
+                    rows = core.DB.run("SELECT k, v FROM " + MAIN_DB_TABLE + " WHERE k LIKE :p AND updated > now() - interval '365 days'",
+                                       p="chat:ig:" + tid + ":%")
+                    for k, v in rows:
+                        c = json.loads(v)
+                        c.update(channel="ig", tenant="", ro=True)
+                        c.pop("agent", None)
+                        out[k[5:]] = c
+    except Exception as e:
+        print("Remote IG chats error:", e)
+        return REMOTE["chats"]
+    REMOTE.update(t=time.time(), chats=out)
+    return out
+
+
 def build(period="30d"):
     period, start, days = period_range(period)
     with core.LOCK:
         chats = json.loads(json.dumps(core.STATE["chats"]))
+    chats.update(json.loads(json.dumps(remote_ig_chats())))
+    with core.LOCK:
         stats = json.loads(json.dumps({d: core.STATS.get(d, {}) for d in days}))
         usage = json.loads(json.dumps({d: core.USAGE.get(d, {}) for d in days}))
 
@@ -524,7 +570,7 @@ def call_list(chats):
                     "budget": f.get("budget", ""), "objection": f.get("objection", ""),
                     "readiness": int(c.get("readiness") or 0), "ts": c.get("lead_ts") or chat_first_ts(c),
                     "called": called, "called_ts": (c.get("call") or {}).get("ts", 0), "deal": deal or "",
-                    "todo": deal not in ("won", "lost") and (not called or rm_due), "link": chat_link(c)})
+                    "todo": deal not in ("won", "lost") and (not called or rm_due), "link": chat_link(c), "ro": bool(c.get("ro"))})
     out.sort(key=lambda x: (not x["todo"], not x["remind_due"], -x["ts"]))
     return out[:100]
 
@@ -569,6 +615,7 @@ def crm_list(chats):
             "cost": round(cc.get("ai_usd", 0) + cc.get("tts_chars", 0) * usd_per_credit, 4), "link": chat_link(c),
             "paused": (c.get("paused_until") or 0) > time.time(), "status": c.get("status", ""), "bot_off": bool(c.get("bot_off")),
             "payments": c.get("payments", []), "paid": round(sum(p["amount"] for p in c.get("payments", [])), 2),
+            "ro": bool(c.get("ro")),
             "tail": [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 ")[:400], "v": bool(h.get("voice")),
                       "f": bool(h.get("f")), "h": bool(h.get("human"))} for h in hist[-14:]]})
     out.sort(key=lambda x: -x["last"])
@@ -676,7 +723,7 @@ def set_bot(key, on):
 
 def history(key):
     with core.LOCK:
-        c = core.STATE["chats"].get(key) or {}
+        c = core.STATE["chats"].get(key) or REMOTE["chats"].get(key) or {}
         return [{"r": h["r"], "t": h["t"].replace(core.STT.VOICE_PREFIX, "🎙 "), "ts": h.get("ts", 0), "v": bool(h.get("voice")),
                  "f": bool(h.get("f")), "h": bool(h.get("human"))} for h in c.get("history", [])]
 
@@ -837,7 +884,7 @@ def handle_get(h):
             return True
         q = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
         data = build((q.get("period") or ["30d"])[0])
-        data = staff_view(data) if r == "staff" else dict(data, role="admin")
+        data = staff_view(data) if (r == "staff" or core.AGENT_MODE) else dict(data, role="admin")
         core.IG.respond_html(h, 200, json.dumps(data, ensure_ascii=False), ctype="application/json; charset=utf-8",
                              headers={"Cache-Control": "no-store"})
         return True
@@ -1072,7 +1119,8 @@ async function load(){
   const r=await fetch("/admin/api?period="+st.per,{headers:{"X-Init-Data":INIT}});
   if(r.status==403){fail("Нет доступа. Откройте панель из бота, в чат которого приходят отчёты.");return;}
   st.data=await r.json();
-  if(STAFF()){TABS=[["calls","Звонки"],["crm","Клиенты"]];if(!["calls","crm"].includes(st.tab))st.tab="calls";}
+  if(STAFF()){TABS=[["eov","Обзор"],["calls","Звонки"],["crm","Клиенты"]];let sv=null;try{sv=localStorage.getItem("adm_x")}catch(e){}
+   if(!sv){st.tab="eov";try{localStorage.setItem("adm_x","1")}catch(e){}}if(!["eov","calls","crm"].includes(st.tab))st.tab="eov";}
   render();
  }catch(e){fail("Не удалось загрузить данные: "+e)}
 }
@@ -1085,7 +1133,7 @@ async function deal(key,status,inp){
 }
 function render(){
  const d=st.data;if(!d)return;
- const V={calls,crm,fin:finance,ov,fn,cost};if(!V[st.tab])st.tab="calls";
+ const V={calls,crm,fin:finance,ov,fn,cost,eov};if(!V[st.tab])st.tab="calls";
  chips();$("#app").innerHTML=V[st.tab](d);
  const q=$("#q");if(q&&st.qfocus){q.focus();q.setSelectionRange(q.value.length,q.value.length);}
 }
@@ -1111,6 +1159,30 @@ function ov(d){
  <div class="card"><h3>Сделки по этапам</h3><table>${d.pipe.map(([k,n])=>{const L=d.crm.filter(x=>x.stage==k);
    return `<tr><td>${n}</td><td>${L.length}</td><td>${k=="won"?money(L.reduce((s,x)=>s+Number(x.deal.amount||0),0),0):""}</td></tr>`}).join("")}</table></div>
  ${d.business.length?`<div class="card"><h3>Кто пишет (бизнес)</h3><table>${d.business.map(([b,n])=>`<tr><td>${esc(b)}</td><td>${n}</td></tr>`).join("")}</table></div>`:""}`;
+}
+function eov(d){
+ const t=d.totals,f=d.funnel,p=d.proc,days=d.daily,mx=Math.max(1,...days.map(x=>x.tg+x.ig)),mxl=Math.max(1,...days.map(x=>x.leads));
+ const bars=days.map(x=>`<div title="${x.d}: ${x.tg+x.ig}"><i style="height:${90*x.tg/mx}px;background:var(--tg)"></i><i style="height:${90*x.ig/mx}px;background:var(--ig)"></i></div>`).join("");
+ const lbars=days.map(x=>`<div title="${x.d}: ${x.leads}"><i style="height:${90*x.leads/mxl}px;background:var(--ok)"></i></div>`).join("");
+ const steps=d.funnel_steps,top=Math.max(1,f.tg.wrote+f.ig.wrote);
+ const frows=steps.map(([k,n],i)=>{const a=f.tg[k],b=f.ig[k],s=a+b,prev=i?f.tg[steps[i-1][0]]+f.ig[steps[i-1][0]]:s;
+  return `<div class="fn"><div class="l"><span>${n}</span><span><b>${s}</b> <span class="mut">${i?pct(s,prev)+" от пред.":""}</span></span></div>
+  <div class="bar"><i style="width:${100*a/top}%;background:var(--tg)"></i><i style="width:${100*b/top}%;background:var(--ig)"></i></div></div>`}).join("");
+ const per=c=>{const x=p[c];return [x.dialogs,f[c].hot,f[c].lead,pct(f[c].lead,x.dialogs),x.dialogs?(x.client_msgs/x.dialogs).toFixed(1):"—"]};
+ const axis=`<div class="axis"><span>${days.length?days[0].d.slice(5):""}</span><span><span class="dot" style="background:var(--tg)"></span>Telegram <span class="dot" style="background:var(--ig);margin-left:6px"></span>Instagram</span><span>${days.length?days[days.length-1].d.slice(5):""}</span></div>`;
+ return `${d.company?`<h3 style="margin:4px 4px 8px">${esc(d.company)}</h3>`:""}<div class="kpis">
+  <div class="kpi"><b>${t.dialogs}</b><span>новых диалогов</span></div>
+  <div class="kpi"><b>${t.leads}</b><span>оставили контакт</span></div>
+  <div class="kpi"><b>${pct(t.leads,t.dialogs)}</b><span>конверсия в заявку</span></div>
+  <div class="kpi"><b>${t.hot}</b><span>горячих</span></div>
+  <div class="kpi"><b>${t.won}</b><span>записались</span></div>
+  <div class="kpi"><b>${d.calls.filter(x=>x.todo).length}</b><span>ждут звонка</span></div></div>
+ <div class="card"><h3>Каналы</h3><table><tr><th></th><th>диалоги</th><th>горячие</th><th>контакты</th><th>конверсия</th><th>сообщ./диалог</th></tr>
+  ${chRow("Telegram",COL.tg,per("tg"))}${chRow("Instagram",COL.ig,per("ig"))}</table></div>
+ ${days.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>${axis}</div>
+ <div class="card"><h3>Заявки по дням</h3><div class="chart">${lbars}</div></div>`:""}
+ <div class="card"><h3>Воронка</h3><p class="mut">Диалоги, начатые за выбранный период.</p>${frows}</div>
+ ${d.needs.length?`<div class="card"><h3>Что чаще всего хотят</h3><table>${d.needs.map(([n,c])=>`<tr><td>${esc(n)}</td><td>${c}</td></tr>`).join("")}</table></div>`:""}`;
 }
 function fn(d){
  const steps=d.funnel_steps,f=d.funnel,top=Math.max(1,f.tg.wrote+f.ig.wrote);
@@ -1192,7 +1264,7 @@ function calls(d){
   ${x.call_time||x.budget?`<div class="mut">${x.call_time?"⏰ "+esc(x.call_time):""}${x.call_time&&x.budget?" · ":""}${x.budget?"💰 "+esc(x.budget):""}</div>`:""}
   ${x.objection?`<div class="mut">⚠️ ${esc(x.objection)}</div>`:""}
   ${x.note&&x.note!=x.want?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
-  <div class="btns">${x.todo?`<button class="won" data-deal="called" data-key="${esc(x.key)}">✓ Позвонил</button>
+  <div class="btns">${x.ro?`<span class="mut">Instagram · только просмотр</span>`:x.todo?`<button class="won" data-deal="called" data-key="${esc(x.key)}">✓ Позвонил</button>
    <button class="lost" data-rem="${esc(x.key)}">⏰ Напомнить</button>
    ${STAFF()?"":`<input type="number" inputmode="decimal" placeholder="сумма $">`}<button class="lost" data-deal="won" data-key="${esc(x.key)}">✅ Купил</button>
    <button class="lost" data-deal="lost" data-key="${esc(x.key)}">❌ Отказ</button>`:
@@ -1229,6 +1301,16 @@ function crm(d){
  ${L.length>200?`<p class="mut">Показаны первые 200 — уточните поиск.</p>`:""}`;
 }
 function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
+ if(x.ro){const tl=x.tail.map(m=>`<div class="msg ${m.r=="a"?"a":""}">${m.r=="a"?(m.h?"👤 ":m.v?"🤖🎙 ":m.f?"🔔 ":"🤖 "):""}${esc(m.t)}</div>`).join("");
+  modal(`<div class="top" style="display:flex;justify-content:space-between;gap:8px"><div><b style="font-size:18px">${esc(x.name||"Клиент")}</b>
+   <div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>Instagram${x.username?" · @"+esc(x.username):""} · с ${when(x.first)}</div></div><button class="xbtn" data-close>✕</button></div>
+   ${x.tel?`<a class="bigbtn" href="tel:${esc(x.tel)}">📞 Позвонить ${esc(x.phone)}</a>`:""}
+   <div class="small">Этап: ${stName(x.stage)} · готовность ${x.readiness}%</div>
+   ${["need","offer","call_time","objection","note"].filter(i=>f[i]).map(i=>`<div class="small">${{need:"🎯",offer:"💼",call_time:"⏰",objection:"⚠️",note:"📝"}[i]} ${esc(f[i])}</div>`).join("")}
+   <div class="mut fl" style="display:flex;justify-content:space-between;align-items:center">Переписка
+   <button class="lost" data-hist="${esc(k)}" style="border:0;border-radius:10px;padding:5px 9px;font-size:12px">📜 Показать всю</button></div><div id="hist">${tl}</div>
+   ${x.link?`<div class="btns"><a class="lost lnk" href="${esc(x.link)}">💬 Открыть в Instagram</a></div>`:""}
+   <div class="mut" style="margin-top:8px">Диалог из Instagram — только просмотр. Ответить можно в Instagram Direct.</div>`);return;}
  const inp=(id,lab,v,ph)=>`<label class="mut fl">${lab}</label><input class="fi" id="cf-${id}" value="${esc(v||"")}" placeholder="${ph||""}">`;
  const tail=x.tail.map(m=>`<div class="msg ${m.r=="a"?"a":""}">${m.r=="a"?(m.h?"👤 ":m.v?"🤖🎙 ":m.f?"🔔 ":"🤖 "):""}${esc(m.t)}</div>`).join("");
  const notes=x.notes.slice().reverse().map(n=>`<div class="note"><span class="mut">${when(n.ts)}</span> ${esc(n.t)}</div>`).join("");

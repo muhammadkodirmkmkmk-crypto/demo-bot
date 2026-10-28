@@ -295,6 +295,8 @@ def for_owner(owner_id):
 
 
 def for_ig_tenant(ig_id):
+    if not ig_id:
+        return None
     for s, a in agents().items():
         if a.get("enabled", True) and str(a.get("ig_tenant") or "") == str(ig_id or ""):
             return s

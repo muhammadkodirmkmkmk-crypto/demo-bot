@@ -1832,7 +1832,7 @@ class Handler(BaseHTTPRequestHandler):
                 if saved:
                     AEVAL.LAST.update(saved)
             IG.respond_html(self, 200, f"status: {AEVAL.LAST['status']}\n\n{AEVAL.LAST['text']}",
-                            ctype="text/plain; charset=utf-8")
+                            ctype="text/plain; charset=utf-8", headers={"Access-Control-Allow-Origin": "*"})
             return
         if self.path.split("?")[0].rstrip("/") == "/eval/last":
             if EVAL.LAST["status"] == "idle":
