@@ -694,7 +694,7 @@ def build_messages(history):
 KEEP_LATIN = {"crm", "erp", "ai", "api", "1c", "telegram", "instagram", "excel", "ios", "android", "app", "store",
               "google", "play", "whatsapp", "businessai", "uz", "it", "sms", "pdf", "online", "ok", "okay", "landing",
               "click", "payme", "faq", "nda", "ielts", "seo", "smm", "express", "premium", "nest", "one", "city",
-              "expressschoolbot", "parol"}
+              "expressschoolbot", "parol", "school", "tashkent", "vip", "individual"}
 UZ_LETTERS = set("ўқғҳЎҚҒҲ")
 RU_LETTERS = set("ыщЫЩ")
 RU_WORDS = set("""и в во на не что как это для мне нам вы я мы есть нет да можно нужно надо сколько стоит пожалуйста
@@ -911,6 +911,9 @@ def to_cyr(text):
         w = m.group(0)
         if w.lower().strip("'") in TR_KEEP or (w.isupper() and len(w) >= 2):
             return w
+        base, sep, suf = (re.split(r"(['’ʻ\x60])", w, maxsplit=1) + ["", ""])[:3]
+        if sep and suf and base.lower() in TR_KEEP:          # School'ga -> School'га (nom lotinda, qo'shimcha kirillda)
+            return base + "'" + lat2cyr_word(suf)
         return lat2cyr_word(w)
     return LAT_WORD_RE.sub(rep, text)
 
