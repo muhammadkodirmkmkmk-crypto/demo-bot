@@ -494,8 +494,11 @@ def deliver_voice(c, parts, script, spoken=""):
     if not STT.tts_enabled() or not parts:
         return False
     text, written = split_written(parts, spoken, script)
+    if not text and written:  # javob faqat narx/raqamlardan iborat — qisqa ovoz + yozma tafsilot
+        text = ("[warmly] Конечно, все цены и детали написал вам ниже сообщением." if script == "ru" else
+                "[warmly] Albatta, narxlar va batafsil ma'lumotni pastda yozib qo'ydim.")
     if not text:
-        return False          # javob faqat raqamlardan iborat — matn bilan yuboriladi
+        return False
     if script.startswith("uz"):
         text = to_lat(text)
     text = voice_text(text, script)
@@ -1184,6 +1187,9 @@ def generate_reply(c, script, model=None):
                 "обрывки вроде «Narx. Tez. Oson.» звучат как робот — так не пиши;\n"
                 "• паузы — знаками: запятая — короткая, точка — средняя, многоточие «…» — длинная; знак «/» не используй;\n"
                 "• если знаешь имя клиента — обратись по имени; без канцелярита;\n"
+                "• если диалог уже идёт — НЕ здоровайся заново, сразу по делу; отвечай на то, что клиент сказал;\n"
+                "• голосовое расшифровано автоматически и может быть с ошибками — пойми смысл, не цитируй клиенту странные слова "
+                "и не переспрашивай очевидное; если смысл совсем непонятен — коротко и вежливо попроси повторить;\n"
                 "• ровно ОДИН тег интонации в самом начале: [warmly] — тепло, для приветствия и предложения, "
                 "или [calm] — чётко и без спешки, для объяснений. Больше тегов не ставь;\n"
                 "• числа, кроме цен, — словами: «24/7» → «yigirma to'rt soat, haftada yetti kun» / «круглосуточно, без выходных»;\n"
@@ -1275,7 +1281,7 @@ def generate_reply(c, script, model=None):
     out = [m for m in out if m and not is_repeat(m, c["history"], 0.9) and not looks_like_service_text(m)]
     out = out[:limit]
     data["messages"] = out
-    if not out and FALLBACK_MODEL and model != FALLBACK_MODEL and WORKING_MODEL["name"] != FALLBACK_MODEL:
+    if not out and FALLBACK_MODEL and model != FALLBACK_MODEL and WORKING_MODEL["name"] != FALLBACK_MODEL and not c.get("no_fallback"):
         print("Reply empty — retrying with", FALLBACK_MODEL)
         return generate_reply(c, script, model=FALLBACK_MODEL)
     return data
@@ -1725,6 +1731,9 @@ def handle(update):
                 text = tg_voice_text(msg).replace(STT.VOICE_PREFIX, "")
             if text and not text.startswith("/") and BOSS.handle_text(chat_id, text, msg.get("reply_to_message")):
                 return
+        if text.startswith("/agenttest") and str(chat_id) == str(REPORT_CHAT_ID):
+            send_msg(chat_id, AEVAL.start(text[10:].strip(), lambda t: send_msg(chat_id, t)))
+            return
         if text.startswith("/eval") and str(chat_id) == str(REPORT_CHAT_ID):
             send_msg(chat_id, EVAL.start(text[5:].strip(), lambda t: send_msg(chat_id, t)))
             return
@@ -1765,6 +1774,8 @@ import crm_web as CRMWEB  # noqa: E402  (CRM veb-interfeysi /crm)
 import agents as AGENTS  # noqa: E402  (mijozlar uchun agentlar: Express School va h.k.)
 IG.init(sys.modules[__name__])
 EVAL.init(sys.modules[__name__])
+import agenteval as AEVAL  # noqa: E402  (mijoz agentini 300 dialogda sinash)
+AEVAL.init(sys.modules[__name__])
 ADMIN.init(sys.modules[__name__])
 BOSS.init(sys.modules[__name__])
 BILL.init(sys.modules[__name__])
@@ -1814,6 +1825,14 @@ class Handler(BaseHTTPRequestHandler):
                 IG.respond_html(self, 200, item[0], ctype="audio/wav" if name.endswith(".wav") else "audio/mpeg")
             else:
                 IG.respond_html(self, 404, "not found", ctype="text/plain")
+            return
+        if self.path.split("?")[0].rstrip("/") == "/eval/agent":
+            if AEVAL.LAST["status"] == "idle":
+                saved = db_get("agenteval:last")
+                if saved:
+                    AEVAL.LAST.update(saved)
+            IG.respond_html(self, 200, f"status: {AEVAL.LAST['status']}\n\n{AEVAL.LAST['text']}",
+                            ctype="text/plain; charset=utf-8")
             return
         if self.path.split("?")[0].rstrip("/") == "/eval/last":
             if EVAL.LAST["status"] == "idle":
