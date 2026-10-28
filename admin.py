@@ -193,11 +193,38 @@ def check_init(init_data):
         return None
 
 
-def is_admin(h):
+def role(h):
+    """admin — hammasi; staff — faqat lidlar (alohida mijoz botida hisobot oluvchi xodim), moliya yo'q"""
     if core.BILL.session_ok(h):          # veb-CRM (kompyuterdan) — bot bergan havola orqali kirilgan
-        return True
+        return "admin"
     uid = check_init(h.headers.get("X-Init-Data", ""))
-    return bool(uid) and uid == str(core.REPORT_CHAT_ID)
+    if not uid:
+        return None
+    if uid == str(core.REPORT_CHAT_ID):
+        return "admin"
+    if core.AGENT_MODE and core.is_staff(uid):
+        return "staff"
+    return None
+
+
+def is_admin(h):
+    return role(h) == "admin"
+
+
+STAFF_POST = ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/bot", "/admin/api/history")
+
+
+def staff_view(d):
+    """Xodim uchun: faqat qo'ng'iroqlar va mijozlar, pul/xarajat maydonlarisiz"""
+    crm = []
+    for x in d["crm"]:
+        x = {k: v for k, v in x.items() if k not in ("cost", "payments", "paid")}
+        x["deal"] = {"status": (x.get("deal") or {}).get("status", "")}
+        x["facts"] = {k: v for k, v in x["facts"].items() if k != "budget"}
+        crm.append(x)
+    calls = [{k: v for k, v in x.items() if k != "budget"} for x in d["calls"]]
+    return {"role": "staff", "period": d["period"], "generated": d["generated"], "calls": calls, "crm": crm,
+            "pipe": d["pipe"], "ch_names": d["ch_names"]}
 
 # --------------------------------------------------------------------------
 # Ma'lumot yig'ish
@@ -732,6 +759,14 @@ def panel_button(chat_id):
                             "reply_markup": {"inline_keyboard": [[{"text": "📊 Открыть панель", "web_app": {"url": panel_url()}}]]}})
 
 
+def staff_panel(chat_id):
+    """Xodimga lidlar paneli: tugma + chatdagi 'Лиды' menyu tugmasi"""
+    core.tg("setChatMenuButton", {"chat_id": int(chat_id), "menu_button": {"type": "web_app", "text": "Лиды",
+                                                                           "web_app": {"url": panel_url()}}})
+    core.tg("sendMessage", {"chat_id": chat_id, "text": "📋 Лиды и клиенты — в панели 👇 (также кнопка «Лиды» слева от поля ввода)",
+                            "reply_markup": {"inline_keyboard": [[{"text": "📋 Открыть лиды", "web_app": {"url": panel_url()}}]]}})
+
+
 COMMANDS = [("crm", "🖥 CRM: открыть на компьютере / в браузере"), ("agents", "🤖 Агенты клиентов и тест"), ("panel", "📊 Панель: звонки, расходы, воронка, лиды"), ("stats", "Сводка за сегодня"),
             ("leads", "Горячие клиенты и контакты"), ("rules", "Мои указания продавцу"),
             ("test", "Тест: написать боту как клиент"), ("digest", "Отчёт за день сейчас"),
@@ -796,11 +831,13 @@ def handle_get(h):
         core.IG.respond_html(h, 200, PAGE, headers={"Cache-Control": "no-store"})
         return True
     if path == "/admin/api":
-        if not is_admin(h):
+        r = role(h)
+        if not r:
             core.IG.respond_html(h, 403, '{"error":"forbidden"}', ctype="application/json")
             return True
         q = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
         data = build((q.get("period") or ["30d"])[0])
+        data = staff_view(data) if r == "staff" else dict(data, role="admin")
         core.IG.respond_html(h, 200, json.dumps(data, ensure_ascii=False), ctype="application/json; charset=utf-8",
                              headers={"Cache-Control": "no-store"})
         return True
@@ -815,11 +852,16 @@ def handle_post(h, body):
                     "/admin/api/expense", "/admin/api/bot", "/admin/api/history", "/admin/api/pay", "/admin/api/price",
                     "/admin/api/sub", "/admin/api/rule", "/admin/api/voice"):
         return False
-    if not is_admin(h):
+    r = role(h)
+    if not r or (r == "staff" and path not in STAFF_POST):
         core.IG.respond_html(h, 403, '{"error":"forbidden"}', ctype="application/json")
         return True
     try:
         d = json.loads(body or b"{}")
+        if r == "staff":
+            d.pop("amount", None)                # xodim summa kiritmaydi
+            if isinstance(d.get("fields"), dict):
+                d["fields"].pop("budget", None)
         if path == "/admin/api/remind":
             ok = set_remind(str(d.get("key")), float(d.get("ts") or 0), d.get("text", ""))
         elif path == "/admin/api/client":
@@ -947,7 +989,8 @@ if(tg){tg.ready();tg.expand();
 }
 const INIT=tg?tg.initData:"";
 const PER=[["today","Сегодня"],["7d","7 дней"],["month","Месяц"],["30d","30 дней"]];
-const TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"]];
+let TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"]];
+const STAFF=()=>st.data&&st.data.role=="staff";
 const COL={tg:"var(--tg)",ig:"var(--ig)",manual:"#8a8f98"};
 let st={per:"month",tab:"calls",data:null,lf:"hot",q:"",sf:"active",qfocus:false};
 try{const s=JSON.parse(localStorage.getItem("adm")||"{}");Object.assign(st,{per:s.per||st.per,tab:s.tab||st.tab})}catch(e){}
@@ -1027,14 +1070,16 @@ async function load(){
  if(!INIT){fail("Откройте панель из Telegram: команда /panel в боте.");return;}
  try{
   const r=await fetch("/admin/api?period="+st.per,{headers:{"X-Init-Data":INIT}});
-  if(r.status==403){fail("Доступ только для администратора.");return;}
-  st.data=await r.json();render();
+  if(r.status==403){fail("Нет доступа. Откройте панель из бота, в чат которого приходят отчёты.");return;}
+  st.data=await r.json();
+  if(STAFF()){TABS=[["calls","Звонки"],["crm","Клиенты"]];if(!["calls","crm"].includes(st.tab))st.tab="calls";}
+  render();
  }catch(e){fail("Не удалось загрузить данные: "+e)}
 }
 function fail(t){$("#app").innerHTML="";$("#err").style.display="block";$("#err").textContent=t}
 async function deal(key,status,inp){
  const amount=inp&&inp.value?Number(inp.value):0;
- if(status=="won"&&!amount){inp&&inp.focus();if(tg)tg.HapticFeedback.notificationOccurred("warning");return;}
+ if(status=="won"&&!amount&&!STAFF()){inp&&inp.focus();if(tg)tg.HapticFeedback.notificationOccurred("warning");return;}
  const r=await fetch("/admin/api/deal",{method:"POST",headers:{"X-Init-Data":INIT,"Content-Type":"application/json"},body:JSON.stringify({key,status,amount})});
  if(r.ok){if(tg)tg.HapticFeedback.notificationOccurred("success");load();}
 }
@@ -1149,7 +1194,7 @@ function calls(d){
   ${x.note&&x.note!=x.want?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
   <div class="btns">${x.todo?`<button class="won" data-deal="called" data-key="${esc(x.key)}">✓ Позвонил</button>
    <button class="lost" data-rem="${esc(x.key)}">⏰ Напомнить</button>
-   <input type="number" inputmode="decimal" placeholder="сумма $"><button class="lost" data-deal="won" data-key="${esc(x.key)}">✅ Купил</button>
+   ${STAFF()?"":`<input type="number" inputmode="decimal" placeholder="сумма $">`}<button class="lost" data-deal="won" data-key="${esc(x.key)}">✅ Купил</button>
    <button class="lost" data-deal="lost" data-key="${esc(x.key)}">❌ Отказ</button>`:
    `<span class="mut">${x.deal=="won"?"✅ Купил":x.deal=="lost"?"❌ Отказ":"📞 Позвонили "+when(x.called_ts)}</span>
    ${x.deal?"":`<button class="lost" data-rem="${esc(x.key)}">⏰ ${x.remind_ts?"Изменить":"Напомнить"}</button>`}
@@ -1178,8 +1223,8 @@ function crm(d){
    <span class="badge st-${x.stage}">${stName(x.stage)}${x.stage=="won"&&x.deal.amount?" · $"+x.deal.amount:""}</span></div></div>`).join("");
  return `<input id="q" class="search" placeholder="🔍 Поиск: имя, телефон, бизнес, заметка" value="${esc(st.q)}">
  <div class="chips filters" style="margin-top:8px">${SF.map(([k,n])=>`<button class="chip ${st.sf==k?"on":""}" data-sf="${k}">${n} <span class="mut">${cnt(k)}</span></button>`).join("")}</div>
- <div class="btns" style="margin:8px 0"><button class="won" data-newclient>＋ Добавить клиента</button><button class="lost" data-export>📤 Выгрузить в Excel</button>
- <span class="mut" style="align-self:center">Продажи: ${money(sum,0)}</span></div>
+ <div class="btns" style="margin:8px 0"><button class="won" data-newclient>＋ Добавить клиента</button>${STAFF()?"":`<button class="lost" data-export>📤 Выгрузить в Excel</button>
+ <span class="mut" style="align-self:center">Продажи: ${money(sum,0)}</span>`}</div>
  ${rows||`<p class="mut" style="padding:16px 4px">Никого не найдено.</p>`}
  ${L.length>200?`<p class="mut">Показаны первые 200 — уточните поиск.</p>`:""}`;
 }
@@ -1193,9 +1238,9 @@ function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
   ${x.tel?`<a class="bigbtn" href="tel:${esc(x.tel)}">📞 Позвонить ${esc(x.phone)}</a>`:""}
   ${x.ch!="manual"?`<div class="botbar ${x.bot_off?"off":""}">${x.bot_off?"⏸ Бот не отвечает этому клиенту":"🤖 Бот отвечает этому клиенту"}<button class="lost" data-bot="${esc(k)}" data-on="${x.bot_off?1:0}">${x.bot_off?"▶️ Включить бота":"⏸ Стоп бот"}</button></div>`:""}
   <div class="mut fl">Этап сделки</div><div class="chips wrap">${st.data.pipe.map(p=>`<button class="chip ${x.stage==p[0]?"on":""}" data-stage="${p[0]}">${p[1]}</button>`).join("")}</div>
-  <input class="fi" id="cl-amt" type="number" inputmode="decimal" placeholder="Сумма продажи $" value="${x.deal.amount||""}" style="display:${x.stage=="won"?"block":"none"}">
+  ${STAFF()?"":`<input class="fi" id="cl-amt" type="number" inputmode="decimal" placeholder="Сумма продажи $" value="${x.deal.amount||""}" style="display:${x.stage=="won"?"block":"none"}">`}
   ${inp("name","Имя",x.name)}${inp("phone","Телефон",x.phone||"","+998 ...")}${inp("business","Бизнес",f.business)}
-  ${inp("need","Что хочет",f.need)}${inp("offer","Что предложили",f.offer)}${inp("budget","Бюджет",f.budget)}${inp("call_time","Удобное время",f.call_time)}
+  ${inp("need","Что хочет",f.need)}${inp("offer","Что предложили",f.offer)}${STAFF()?"":inp("budget","Бюджет",f.budget)}${inp("call_time","Удобное время",f.call_time)}
   ${f.objection?`<div class="small">⚠️ Возражение: ${esc(f.objection)}</div>`:""}${f.note?`<div class="small">📝 Итог бота: ${esc(f.note)}</div>`:""}
   <label class="mut fl">Новая заметка</label><textarea class="fi" id="cf-note" rows="2" placeholder="Что обсудили, договорённости…"></textarea>
   <div class="btns"><button class="won" data-saveclient="${esc(k)}">💾 Сохранить</button><button class="lost" data-rem="${esc(k)}">⏰ ${x.remind_ts?"Напоминание "+when(x.remind_ts):"Напомнить"}</button>
@@ -1203,12 +1248,12 @@ function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
   ${notes?`<div class="mut fl">Заметки</div>${notes}`:""}
   ${tail||x.ch!="manual"?`<div class="mut fl" style="display:flex;justify-content:space-between;align-items:center">Переписка
    <button class="lost" data-hist="${esc(k)}" style="border:0;border-radius:10px;padding:5px 9px;font-size:12px">📜 Показать всю</button></div><div id="hist">${tail}</div>`:""}
-  <div class="mut" style="margin-top:8px">Готовность ${x.readiness}% · расход на клиента ${money(x.cost,3)}${x.paused?" · бот на паузе (отвечал менеджер)":""}</div></div>`);}
+  <div class="mut" style="margin-top:8px">Готовность ${x.readiness}%${STAFF()?"":" · расход на клиента "+money(x.cost,3)}${x.paused?" · бот на паузе (отвечал менеджер)":""}</div></div>`);}
 async function post(url,body){const r=await fetch(url,{method:"POST",headers:{"X-Init-Data":INIT,"Content-Type":"application/json"},body:JSON.stringify(body)});
  if(tg)tg.HapticFeedback.notificationOccurred(r.ok?"success":"error");return r.ok?r.json():null;}
-async function saveClient(k){const fields={};["name","phone","business","need","offer","budget","call_time"].forEach(i=>fields[i]=$("#cf-"+i).value);
+async function saveClient(k){const fields={};["name","phone","business","need","offer","budget","call_time"].forEach(i=>{const e=$("#cf-"+i);if(e)fields[i]=e.value});
  const stage=$("#cl").dataset.stage;const amount=$("#cl-amt")?$("#cl-amt").value:0;
- if(stage=="won"&&!amount){$("#cl-amt").focus();return;}
+ if(stage=="won"&&!amount&&!STAFF()){$("#cl-amt").focus();return;}
  if(await post("/admin/api/client",{key:k,fields,stage,amount,note:$("#cf-note").value})){closeModal();load();}}
 function openNew(){modal(`<b style="font-size:18px">＋ Новый клиент</b><div class="mut">Например, позвонил сам или пришёл по рекомендации</div>
  <label class="mut fl">Имя</label><input class="fi" id="nc-name"><label class="mut fl">Телефон</label><input class="fi" id="nc-phone" inputmode="tel" placeholder="+998 ...">

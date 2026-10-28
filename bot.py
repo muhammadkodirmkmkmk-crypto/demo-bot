@@ -1705,6 +1705,8 @@ def handle(update):
             if text.startswith("/start"):
                 send_msg(chat_id, "✅ Bot ishlayapti. Hisobotlar (yangi mijozlar, lidlar) shu chatga keladi.\n"
                                   "✅ Бот работает. Отчёты (новые клиенты, заявки) будут приходить в этот чат.")
+            if AGENT_MODE and (text.startswith("/start") or text.startswith("/panel")):
+                ADMIN.staff_panel(chat_id)                 # lidlar paneli (moliyasiz)
             return                                         # xodim — mijoz emas
         if text.startswith("/start") and AGENT_MODE and not BOSS.is_admin_chat(chat_id):
             text = "Assalomu alaykum"                      # mijoz botni ochdi — agent salomlashadi
