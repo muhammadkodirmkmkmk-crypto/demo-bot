@@ -227,7 +227,8 @@ PRESETS = {
     "express": {"slug": "express", "company": "Express School", "prompt": EXPRESS_PROMPT, "blocks": EXPRESS_BLOCKS,
                 "fix": [(r"\b([Nn])azariya\b", r"\1azariy"), (r"\b([Нн])азария\b", r"\1азарий"),
                         (r"(?i)\bэ[хк]спресс\b", "Express"), (r"(?i)\bekspress\b", "Express")],
-                "site": "https://expressschool.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True},
+                "site": "https://expressschool.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True,
+                "report_also": ["6333364866"]},   # Express hisobotlari qo'shimcha shu chatga ham
 }
 
 
@@ -243,7 +244,7 @@ def agents():
         items = {}
         for slug, p in PRESETS.items():
             a = dict(p)
-            a.update({k: v for k, v in (saved.get(slug) or {}).items() if k not in ("prompt", "fix", "blocks")})
+            a.update({k: v for k, v in (saved.get(slug) or {}).items() if k not in ("prompt", "fix", "blocks", "report_also")})
             items[slug] = a
         for slug, a in saved.items():
             if slug not in items:
@@ -253,7 +254,7 @@ def agents():
 
 
 def _save():
-    core.db_put("agents", {s: {k: v for k, v in a.items() if k not in ("prompt", "fix", "blocks") or s not in PRESETS}
+    core.db_put("agents", {s: {k: v for k, v in a.items() if k not in ("prompt", "fix", "blocks", "report_also") or s not in PRESETS}
                            for s, a in agents().items()})
 
 
@@ -284,6 +285,15 @@ def for_ig_tenant(ig_id):
         if a.get("enabled", True) and str(a.get("ig_tenant") or "") == str(ig_id or ""):
             return s
     return None
+
+
+def report_also(slug):
+    """Agent hisobotlari qo'shimcha yuboriladigan chatlar"""
+    return [str(x) for x in ((get(slug) or {}).get("report_also") or [])]
+
+
+def all_report_also():
+    return {x for s in agents() for x in report_also(s)}
 
 
 def report_chat(slug):

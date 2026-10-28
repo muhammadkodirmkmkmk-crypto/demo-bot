@@ -46,6 +46,7 @@ PRICES = {"claude-sonnet-5-5": (2.0, 2.5, 0.10, 10.0), "claude-haiku-5-5": (0.10
           "claude-haiku-4-5-20251001": (1.0, 1.25, 0.10, 5.0)}
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 REPORT_CHAT_ID = os.environ.get("REPORT_CHAT_ID", os.environ.get("ADMIN_CHAT_ID", "7871931220"))
+REPORT_ALSO = [x.strip() for x in os.environ.get("REPORT_ALSO", "").split(",") if x.strip()]   # admin hisobotlari nusxasi
 HOT_THRESHOLD = int(os.environ.get("HOT_THRESHOLD", "70"))
 AI_REPLIES = os.environ.get("AI_REPLIES", "1") != "0"
 TYPING_DELAY = os.environ.get("TYPING_DELAY", "1") != "0"
@@ -1286,6 +1287,27 @@ def report_target(c):
     return c.get("report_chat") or REPORT_CHAT_ID or STATE["owners"].get(c.get("bc_id") or "", "")
 
 
+def admin_also():
+    """Admin hisobotlarining nusxasi kimga: REPORT_ALSO + alohida bot rejimida agentning qo'shimcha chatlari"""
+    extra = list(REPORT_ALSO) + (AGENTS.report_also(AGENT_MODE) if AGENT_MODE else [])
+    return [x for i, x in enumerate(extra) if x not in extra[:i] and x != str(REPORT_CHAT_ID)]
+
+
+def report_targets(c):
+    t = [x.strip() for x in str(report_target(c) or "").split(",") if x.strip()]
+    ch = chat_channel(c)
+    if ch.startswith("agent:"):
+        t += AGENTS.report_also(ch[6:])
+    if str(REPORT_CHAT_ID) in t:
+        t += admin_also()
+    return [x for i, x in enumerate(t) if x not in t[:i]]
+
+
+def is_staff(chat_id):
+    """Hisobot oluvchi xodim (admin emas) — u mijoz sifatida qabul qilinmaydi"""
+    return str(chat_id) in set(admin_also()) | AGENTS.all_report_also()
+
+
 def _cut(s, n):
     s = " ".join(str(s or "").split())
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
@@ -1293,8 +1315,8 @@ def _cut(s, n):
 
 def send_report(c, title):
     """Qisqa lid kartochkasi + tugmalar (Позвонил / Купил / Отказ). Kartochkaga javob — tuzatish."""
-    target = report_target(c)
-    if not target:
+    targets = report_targets(c)
+    if not targets:
         print("Report skipped (no target):", title)
         return
     f = c.get("facts", {})
@@ -1323,13 +1345,14 @@ def send_report(c, title):
     lines = lines[:2] + [esc(x) for x in lines[2:]]
     lines.append(f"Готовность {c.get('readiness', 0)}%")
     key = next((k for k, v in STATE["chats"].items() if v is c), None)
-    data = {"chat_id": target, "text": "\n".join(lines)[:4000], "disable_web_page_preview": True, "parse_mode": "HTML"}
-    if key:
-        data["reply_markup"] = BOSS.card_buttons(key)
-    res = tg("sendMessage", data)
-    mid = (res.get("result") or {}).get("message_id")
-    if key and mid:
-        BOSS.remember_card(mid, key)
+    for target in targets:
+        data = {"chat_id": target, "text": "\n".join(lines)[:4000], "disable_web_page_preview": True, "parse_mode": "HTML"}
+        if key:
+            data["reply_markup"] = BOSS.card_buttons(key)
+        res = tg("sendMessage", data)
+        mid = (res.get("result") or {}).get("message_id")
+        if key and mid:
+            BOSS.remember_card(mid, key)
 
 # ==========================================================================
 # Dialog
@@ -1678,6 +1701,11 @@ def handle(update):
         chat = msg.get("chat", {})
         chat_id = chat.get("id")
         text = (msg.get("text") or "").strip()
+        if chat.get("type") == "private" and not BOSS.is_admin_chat(chat_id) and is_staff(chat_id):
+            if text.startswith("/start"):
+                send_msg(chat_id, "✅ Bot ishlayapti. Hisobotlar (yangi mijozlar, lidlar) shu chatga keladi.\n"
+                                  "✅ Бот работает. Отчёты (новые клиенты, заявки) будут приходить в этот чат.")
+            return                                         # xodim — mijoz emas
         if text.startswith("/start") and AGENT_MODE and not BOSS.is_admin_chat(chat_id):
             text = "Assalomu alaykum"                      # mijoz botni ochdi — agent salomlashadi
         elif text.startswith("/start"):

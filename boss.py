@@ -265,7 +265,7 @@ def on_callback(cq):
     chat_id = (msg.get("chat") or {}).get("id")
     if data[:2] in ("h:", "b:"):
         key = key_by_short(data[2:])
-        if not key or (str(chat_id) != str(core.report_target(core.chat_state(key))) and not is_admin_chat(chat_id)):
+        if not key or (str(chat_id) not in core.report_targets(core.chat_state(key)) and not is_admin_chat(chat_id)):
             core.tg("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "Нет доступа"})
             return True
         if data[0] == "h":
@@ -486,20 +486,21 @@ def notify_new_dialog(c, text):
     ch = core.chat_channel(c)
     if _S["notify"] != "all" or ch not in ("tg", "ig") or not core.REPORT_CHAT_ID:
         return
-    if str(core.report_target(c)) != str(core.REPORT_CHAT_ID):
+    if str(core.REPORT_CHAT_ID) not in [x.strip() for x in str(core.report_target(c)).split(",")]:
         return            # mijoz-biznesning suhbatlari — ularning o'z chatiga
     who = c.get("name") or "Клиент"
     if c.get("username"):
         who += " @" + c["username"]
     t = text.replace(core.STT.VOICE_PREFIX, "🎙 ")
     key = next((k for k, v in core.STATE["chats"].items() if v is c), None)
-    data = {"chat_id": core.REPORT_CHAT_ID, "text": f"🆕 {core.ADMIN.CH_NAMES[ch]} · {who}: «{t[:160]}»"}
-    if key:
-        data["reply_markup"] = {"inline_keyboard": [chat_row(key)]}
-    res = core.tg("sendMessage", data)
-    mid = (res.get("result") or {}).get("message_id")
-    if key and mid:
-        remember_card(mid, key)
+    for target in [core.REPORT_CHAT_ID] + core.admin_also():
+        data = {"chat_id": target, "text": f"🆕 {core.ADMIN.CH_NAMES[ch]} · {who}: «{t[:160]}»"}
+        if key:
+            data["reply_markup"] = {"inline_keyboard": [chat_row(key)]}
+        res = core.tg("sendMessage", data)
+        mid = (res.get("result") or {}).get("message_id")
+        if key and mid:
+            remember_card(mid, key)
 
 
 def send_digest():
@@ -520,6 +521,8 @@ def send_digest():
         lines.append(f"\n📋 Работаю по {len(_S['rules'])} вашим указаниям · /rules")
     core.tg("sendMessage", {"chat_id": core.REPORT_CHAT_ID, "text": "\n".join(lines)[:4000],
                             "reply_markup": {"inline_keyboard": [[{"text": "📊 Панель", "web_app": {"url": core.ADMIN.panel_url()}}]]}})
+    for target in core.admin_also():                 # nusxa (panel tugmasisiz — panel faqat admin uchun)
+        core.tg("sendMessage", {"chat_id": target, "text": "\n".join(lines)[:4000]})
 
 
 def check_reminders():
