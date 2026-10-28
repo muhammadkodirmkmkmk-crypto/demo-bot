@@ -254,7 +254,7 @@ PRESETS = {
                         (r"\bV[oa][zj]?h?deni(?:y)?e\b", "Haydash"), (r"\bv[oa][zj]?h?deni(?:y)?e\b", "haydash"),
                         (r"\bMedspravka\b", "Tibbiy ma'lumotnoma"), (r"\bmedspravka\b", "tibbiy ma'lumotnoma")],   # eski raqam -> yagona raqam
                 "site": "https://expressschool.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True,
-                "report_also": ["6333364866"]},   # Express hisobotlari qo'shimcha shu chatga ham
+                "report_also": ["6333364866", "963318006"]},   # Express hisobotlari qo'shimcha shu chatga ham
 }
 
 
