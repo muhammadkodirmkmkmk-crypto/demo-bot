@@ -266,7 +266,7 @@ def db_connect():
     return DB
 
 
-def db_put(k, v):
+def db_put(k, v, table=None):
     global DB
     if DB is None:
         return False
@@ -274,7 +274,7 @@ def db_put(k, v):
     with DB_LOCK:
         for attempt in range(2):
             try:
-                DB.run("INSERT INTO " + DB_TABLE + " (k, v, updated) VALUES (:k, :v, now()) "
+                DB.run("INSERT INTO " + (table or DB_TABLE) + " (k, v, updated) VALUES (:k, :v, now()) "
                        "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated = now()", k=k, v=data)
                 return True
             except Exception as e:
@@ -723,7 +723,9 @@ UZ_WORDS = set("""нима нега қанча канча қанақа кана�
 қилинг оркали орқали асосан телим хисоби ҳисоби ми мисиз уйлаб ўйлаб курай кўрай натижа узим ўзим ёзилиш маркази
 марказ укув ўқув савдо махфий мисан ассалом кечкурун кечқурун та тагача ойда йилига кишим одам ходим ходимлар мижоз
 мижозлар буюртма буюртмалар хисоб ҳисоб харажат тушади тушасиз бизнеси бизнесим бизнесимиз соҳа соха соҳасида
-сохасида ошириш учун ишлаб чиқариш чикариш блакнот дафтар ишлатамиз молжалим мўлжал атрофида толик тўлиқ""".split())
+сохасида ошириш учун ишлаб чиқариш чикариш блакнот дафтар ишлатамиз молжалим мўлжал атрофида толик тўлиқ
+саломалекум саломалейкум саломалайкум ассаламу алейкум яхшимисиз яхшимисз яхшимсиз яхшимисизми бойича бўйича буйича
+хаа хаа ҳаа хо хоо ўқиганман укиганман укиганмиз ўқиганмиз ўқимоқчиман укимокчиман тугатганман битирганман сертификатим""".split())
 NEUTRAL = set("""ок окей ok скидка скидку скидки сайт сайтга сайтни телефон тел номер номерим телеграм телеграмм телега
 инстаграм эксель excel вой вооой воой клиент клиентлар реально короче норм хмм ммм ааа ресторан кафе клиника автосалон
 автосервис бот срм ерп 1с блокнот меню кейтеринг конструктор интернет магазин у бронь бронни""".split())
@@ -733,7 +735,7 @@ UZ_SUFFIX = re.compile(r"(ми|мизми|сизми|лар|ларни|ларг�
                        r"мисан|санми|ларми|сизларми|сизлар|сизлардан|ларингиз|миканслар|миканлар|адиган|ганман|гани|моқда|мокда|"
                        r"еси|оси|аси|иси|уси|сини|сига|сида|сидан|имиз|имни|имга|имда)$")
 UZ_STRONG_SUFFIX = re.compile(r"(миди|мидим|ларми|сизларми|сизлар|моқчи|мокчи|япти|ябди|япман|ганмиз|адими|адиган|ингиз|миканслар|"
-                              r"ларингиз|сизми|мизми|дими|ганман)$")
+                              r"ларингиз|сизми|мизми|дими|ганман|мисз|мисиз|ласиз|ласзи|ласизми|оласиз|олосиз|ганмисиз|япсиз|япсизми)$")
 RU_SUFFIX = re.compile(r"(ость|ться|тся|ешь|ете|ого|его|ому|ему|ыми|ими|ией|ание|ение|ый|ий|ой|ая|яя|ое|ее|ые|ие|ует|"
                        r"ают|ят|ит|ить|ать|ять|еть|уть|ов|ев|ами|ями|ах|ях|ировать|ически|ство|ская|ский|ское|ские|ность)$")
 ARTIFACT_RE = re.compile(r"https?://\S+|@\w+|\$?\d[\d\s\-$.,%:]*")
@@ -806,6 +808,17 @@ LANG_REQ_RU = re.compile(r"(?i)((можно|давайте|пишите|пиши
 LANG_REQ_UZ = re.compile(r"(?i)((узбекча|ўзбекча|o'?zbekcha)\s*(ёз|yoz|гапир|gapir|ёзсам|yozsam|майли|mayli)|"
                          r"(можно|давайте|пишите|пиши|лучше)\s*(на|по)[- ]?узбекск|"
                          r"(узбек|ўзбек|o'?zbek) тилида\s*(ёз|гапир)|o'?zbek tilida\s*(yoz|gapir))")
+
+
+def wrong_output_lang(msgs, script):
+    """Model mijoz tilida yozmagan bo'lsa — True (o'zbek suhbatida ruscha yoki rus suhbatida o'zbekcha lotin)"""
+    t = ARTIFACT_RE.sub(" ", " ".join(str(m) for m in msgs))
+    e = lang_evidence(t)
+    if script.startswith("uz"):
+        return e["cyr"] >= 12 and e["cyr"] > e["lat"] and e["ru"] >= e["uz"] + 1
+    if script == "ru":
+        return e["lat"] >= 20 and e["lat"] > 2 * e["cyr"]
+    return False
 
 
 def client_script(c):
@@ -1264,6 +1277,9 @@ def generate_reply(c, script, model=None):
             problems.append("Не проси номер телефона снова — клиент отказался или ты уже просил. Ответь по сути или тепло попрощайся.")
         if script == "ru" and re.search(r"(?i)\b(rahmat|albatta|tushunarli|iltimos|menejer|bemalol|qo'ng'iroq)\b", " ".join(raw_msgs)):
             problems.append("Клиент пишет по-русски — отвечай только по-русски, без узбекских слов.")
+        if wrong_output_lang(raw_msgs, script):
+            problems.append("Клиент пишет по-узбекски — весь ответ пиши по-узбекски ЛАТИНИЦЕЙ, не по-русски." if script.startswith("uz")
+                            else "Клиент пишет по-русски — весь ответ пиши по-русски.")
         if script.startswith("uz") and re.search(r"(?i)\b(дорого|короче|скидка|просто|конечно|хорошо)\b", " ".join(raw_msgs)):
             problems.append("В узбекском ответе русские слова. Пиши только по-узбекски латиницей.")
         if best is None or len(problems) < best[0]:
@@ -1355,6 +1371,11 @@ def send_report(c, title):
         lines.append("💬 «" + _cut(last_u.replace(STT.VOICE_PREFIX, "🎙 "), 120) + "»")
     lines = lines[:2] + [esc(x) for x in lines[2:]]
     lines.append(f"Готовность {c.get('readiness', 0)}%")
+    if not AGENT_MODE and ch.startswith("agent:") and c.get("channel") == "ig" and (AGENTS.get(ch[6:]) or {}).get("own_bot"):
+        lines[0] += " · Instagram"                   # mijozning o'z boti bor — kartochka o'sha bot orqali (AI Business'ga emas)
+        db_put("relay:" + ch[6:] + ":" + "%.3f" % time.time(), {"text": "\n".join(lines)[:4000]})
+        print("Report relayed to", ch[6:], "bot:", title)
+        return
     key = next((k for k, v in STATE["chats"].items() if v is c), None)
     for target in targets:
         data = {"chat_id": target, "text": "\n".join(lines)[:4000], "disable_web_page_preview": True, "parse_mode": "HTML"}
@@ -1433,6 +1454,11 @@ def ai_reply(key):
         c["hot_sent"] = True
         stat(chat_channel(c), hot=1)
         send_report(c, "🌶 ГОРЯЧИЙ клиент — пора подключаться")
+    if action == "complaint" and not c.get("complaint_sent"):      # shikoyat: bot ishlashda davom etadi (raqamni oladi)
+        c["complaint_sent"] = True
+        c["hot_sent"] = True
+        stat(chat_channel(c), complaints=1)
+        send_report(c, "⚠️ ЖАЛОБА — разобраться и позвонить")
     if action == "stop":
         c["status"] = "stopped"
     elif action == "handoff":
@@ -1610,6 +1636,10 @@ def send_followup(key):
             d = parse_json(raw) if raw.strip().startswith("{") else None
             if d and d.get("messages"):
                 raw = " ".join(str(x) for x in d["messages"])
+            if wrong_output_lang([raw], script):        # o'zbek mijozga ruscha eslatma (lotinga o'girilib «Vash vopros…» bo'lardi)
+                merged[-1]["content"] += ("\nНапоминание — только по-узбекски латиницей." if script.startswith("uz")
+                                          else "\nНапоминание — только по-русски.")
+                continue
             t = render(clean_text(raw.strip().strip('"«»')), script)
             if looks_like_service_text(t):
                 t = ""
@@ -1624,6 +1654,55 @@ def send_followup(key):
                 c["history"].append({"r": "a", "t": text, "ts": time.time(), "f": n})
             stat(chat_channel(c), followups=1)
         save_chat(key)
+
+
+def relay_loop():
+    """Alohida mijoz boti: asosiy botdagi (Instagram) kartochkalarni o'z hisobot chatlariga yuborish + statistikani asosiy botga berish"""
+    tbl = ADMIN.MAIN_DB_TABLE
+    last_pub = 0
+    while True:
+        time.sleep(15)
+        try:
+            if DB is None or not tbl or tbl == DB_TABLE:
+                continue
+            with DB_LOCK:
+                rows = DB.run("SELECT k, v FROM " + tbl + " WHERE k LIKE :p ORDER BY k LIMIT 20", p="relay:" + AGENT_MODE + ":%")
+            for k, v in rows:
+                with DB_LOCK:
+                    DB.run("DELETE FROM " + tbl + " WHERE k = :k", k=k)
+                text = (json.loads(v) or {}).get("text", "")
+                for t in report_targets({"history": [], "chat_id": "relay"}):
+                    tg("sendMessage", {"chat_id": t, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+            if time.time() - last_pub > 600:
+                last_pub = time.time()
+                db_put("agentstats:" + AGENT_MODE, agent_stats(), table=tbl)
+        except Exception as e:
+            print("Relay error:", e)
+
+
+def agent_stats():
+    """Kunlik: yangi dialoglar, lidlar, AI $, ovoz kreditlari, STT soniyalari — asosiy bot paneli uchun"""
+    with LOCK:
+        stats = json.loads(json.dumps(STATS))
+        usage = json.loads(json.dumps(USAGE))
+        chats = [(chat_channel(c), ADMIN.chat_first_ts(c), bool(c.get("lead_sent"))) for c in STATE["chats"].values()]
+    days = {}
+    blank = lambda: {"ai": 0.0, "tts": 0, "stt": 0, "msgs_in": 0, "dialogs": 0, "leads": 0}
+    for d, chs in stats.items():
+        x = days.setdefault(d, blank())
+        for s in chs.values():
+            x["tts"] += int(s.get("tts_chars", 0))
+            x["stt"] += int(s.get("stt_sec", 0))
+            x["msgs_in"] += int(s.get("msgs_in", 0))
+    for d, u in usage.items():
+        days.setdefault(d, blank())["ai"] = round(usage_cost(u), 4)
+    for ch, first, lead in chats:
+        if ch != "tg" or not first:
+            continue
+        x = days.setdefault(datetime.fromtimestamp(first, TZ).strftime("%Y-%m-%d"), blank())
+        x["dialogs"] += 1
+        x["leads"] += int(lead)
+    return {"days": days, "updated": time.time()}
 
 
 def scheduler():
@@ -1880,5 +1959,7 @@ if __name__ == "__main__":
         print("Webhook:", result)
     threading.Thread(target=ADMIN.setup_menu, daemon=True).start()
     threading.Thread(target=scheduler, daemon=True).start()
+    if AGENT_MODE:
+        threading.Thread(target=relay_loop, daemon=True).start()
     print("Bot running on port", port, "| memory:", "postgres" if DB is not None else "file", "| models:", MODELS)
     ThreadingServer(("0.0.0.0", port), Handler).serve_forever()

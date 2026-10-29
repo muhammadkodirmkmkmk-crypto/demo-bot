@@ -870,6 +870,106 @@ def command(chat_id, text):
     return True
 
 # --------------------------------------------------------------------------
+# ИИ-клиенты: har bir mijoz-agent bo'yicha alohida hisobot (dialoglar, AI, ElevenLabs, server)
+# --------------------------------------------------------------------------
+AIC_PERIODS = [("7d", "Неделя"), ("month", "Этот месяц"), ("quarter", "Квартал"), ("all", "Всё время")]
+AIC_SERVER_DEFAULT = float(os.environ.get("AGENT_SERVER_USD", "5"))   # alohida bot (Railway servisi), $/oy
+
+
+def aic_server():
+    return core.db_get("aiclients:server") or {}
+
+
+def set_aic_server(slug, usd):
+    if not core.AGENTS.get(slug):
+        return False
+    v = aic_server()
+    v[slug] = max(0.0, round(float(usd), 2))
+    return core.db_put("aiclients:server", v)
+
+
+def ai_clients(period="month"):
+    today = datetime.now(core.TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "7d":
+        start = today - timedelta(days=6)
+    elif period == "quarter":
+        start = today.replace(month=3 * ((today.month - 1) // 3) + 1, day=1)
+    elif period == "all":
+        start = None
+    else:
+        period, start = "month", today.replace(day=1)
+    t0 = start.strftime("%Y-%m-%d") if start else "0000"
+    t1 = today.strftime("%Y-%m-%d")
+    sub = eleven_subscription()
+    usd_per_credit = ELEVEN_PLAN_USD / max(1, (sub or {}).get("limit") or ELEVEN_PLAN_CREDITS)
+    with core.LOCK:
+        stats = json.loads(json.dumps(core.STATS))
+        chats = json.loads(json.dumps(list(core.STATE["chats"].values())))
+    srv = aic_server()
+    out = []
+    for slug, a in core.AGENTS.agents().items():
+        ch = "agent:" + slug
+        days = {}
+        blank = lambda: {"tg": 0, "ig": 0, "leads": 0, "ai": 0.0, "tts": 0, "stt": 0}
+        for d, chs in stats.items():                     # shu botda (Instagram / Business) sarflangan
+            x = chs.get(ch)
+            if x:
+                y = days.setdefault(d, blank())
+                y["ai"] += x.get("ai_usd", 0)
+                y["tts"] += x.get("tts_chars", 0)
+                y["stt"] += x.get("stt_sec", 0)
+        for c in chats:
+            if core.chat_channel(c) != ch:
+                continue
+            first = chat_first_ts(c)
+            if not first:
+                continue
+            y = days.setdefault(datetime.fromtimestamp(first, core.TZ).strftime("%Y-%m-%d"), blank())
+            y["ig" if c.get("channel") == "ig" else "tg"] += 1
+            y["leads"] += int(bool(c.get("lead_sent")))
+        remote = core.db_get("agentstats:" + slug) or {}     # mijozning alohida boti (Telegram)
+        for d, v in (remote.get("days") or {}).items():
+            y = days.setdefault(d, blank())
+            y["tg"] += int(v.get("dialogs", 0))
+            y["leads"] += int(v.get("leads", 0))
+            y["ai"] += float(v.get("ai", 0))
+            y["tts"] += int(v.get("tts", 0))
+            y["stt"] += int(v.get("stt", 0))
+        if not days and not a.get("own_bot"):
+            continue
+        first_day = min(days) if days else t1
+        d0 = max(t0, first_day)
+        sel = {d: v for d, v in days.items() if d0 <= d <= t1}
+        dd = datetime.strptime(d0, "%Y-%m-%d")
+        span = []
+        while dd.strftime("%Y-%m-%d") <= t1:
+            span.append(dd.strftime("%Y-%m-%d"))
+            dd += timedelta(days=1)
+        n_days = len(span)
+        server_m = float(srv.get(slug, AIC_SERVER_DEFAULT if a.get("own_bot") else 0))
+        tot = {k: sum(v[k] for v in sel.values()) for k in ("tg", "ig", "leads", "ai", "tts", "stt")}
+        tts_usd = tot["tts"] * usd_per_credit
+        server = server_m * n_days / 30.0
+        spend = tot["ai"] + tts_usd + server
+        dialogs = tot["tg"] + tot["ig"]
+        wk = [0] * 7
+        for d, v in sel.items():
+            wk[datetime.strptime(d, "%Y-%m-%d").weekday()] += v["tg"] + v["ig"]
+        out.append({"slug": slug, "company": a.get("company") or slug, "own_bot": bool(a.get("own_bot")),
+                    "ig": bool(a.get("ig_tenant")), "since": first_day, "days": n_days,
+                    "dialogs": dialogs, "tg": tot["tg"], "ig_dialogs": tot["ig"], "leads": tot["leads"],
+                    "ai": round(tot["ai"], 3), "tts_chars": tot["tts"], "tts_usd": round(tts_usd, 3),
+                    "stt_min": round(tot["stt"] / 60, 1), "server": round(server, 2), "server_m": server_m,
+                    "spend": round(spend, 2), "per_dialog": round(spend / dialogs, 3) if dialogs else 0,
+                    "per_lead": round(spend / tot["leads"], 2) if tot["leads"] else 0, "weekday": wk,
+                    "updated": remote.get("updated", 0),
+                    "daily": [{"d": d, "tg": (sel.get(d) or {}).get("tg", 0), "ig": (sel.get(d) or {}).get("ig", 0),
+                               "cost": round((sel.get(d) or {}).get("ai", 0) + (sel.get(d) or {}).get("tts", 0) * usd_per_credit, 3)}
+                              for d in span[-120:]]})
+    out.sort(key=lambda x: -x["dialogs"])
+    return {"period": period, "periods": AIC_PERIODS, "items": out}
+
+# --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 def handle_get(h):
@@ -878,6 +978,14 @@ def handle_get(h):
         return core.CRMWEB.handle_get(h)
     if path == "/admin":
         core.IG.respond_html(h, 200, PAGE, headers={"Cache-Control": "no-store"})
+        return True
+    if path == "/admin/api/aiclients":
+        if role(h) != "admin" or core.AGENT_MODE:
+            core.IG.respond_html(h, 403, '{"error":"forbidden"}', ctype="application/json")
+            return True
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
+        core.IG.respond_html(h, 200, json.dumps(ai_clients((q.get("period") or ["month"])[0]), ensure_ascii=False),
+                             ctype="application/json; charset=utf-8", headers={"Cache-Control": "no-store"})
         return True
     if path == "/admin/api":
         r = role(h)
@@ -899,7 +1007,7 @@ def handle_post(h, body):
         return core.CRMWEB.handle_post(h, body)
     if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",
                     "/admin/api/expense", "/admin/api/bot", "/admin/api/history", "/admin/api/pay", "/admin/api/price",
-                    "/admin/api/sub", "/admin/api/rule", "/admin/api/voice"):
+                    "/admin/api/sub", "/admin/api/rule", "/admin/api/voice", "/admin/api/aicserver"):
         return False
     r = role(h)
     if not r or (r == "staff" and path not in STAFF_POST):
@@ -927,6 +1035,8 @@ def handle_post(h, body):
             ok = core.BILL.sub_action(d)
         elif path == "/admin/api/rule":
             ok = core.BOSS.del_rule(int(d["delete"])) if d.get("delete") else core.BOSS.add_rule(str(d.get("text") or ""))
+        elif path == "/admin/api/aicserver":
+            ok = set_aic_server(str(d.get("slug")), d.get("usd") or 0)
         elif path == "/admin/api/voice":
             ok = core.BOSS.set_voice_mode(str(d.get("mode") or ""))
         elif path == "/admin/api/bot":
@@ -1038,10 +1148,10 @@ if(tg){tg.ready();tg.expand();
 }
 const INIT=tg?tg.initData:"";
 const PER=[["today","Сегодня"],["7d","7 дней"],["month","Месяц"],["30d","30 дней"]];
-let TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"]];
+let TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"],["aic","ИИ-клиенты"]];
 const STAFF=()=>st.data&&st.data.role=="staff";
 const COL={tg:"var(--tg)",ig:"var(--ig)",manual:"#8a8f98"};
-let st={per:"month",tab:"calls",data:null,lf:"hot",q:"",sf:"active",qfocus:false};
+let st={per:"month",tab:"calls",data:null,lf:"hot",q:"",sf:"active",qfocus:false,ap:"month",aic:null};
 try{const s=JSON.parse(localStorage.getItem("adm")||"{}");Object.assign(st,{per:s.per||st.per,tab:s.tab||st.tab})}catch(e){}
 const $=s=>document.querySelector(s);
 const money=(v,d=2)=>"$"+Number(v||0).toFixed(d);
@@ -1050,6 +1160,7 @@ const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&g
 const when=ts=>{if(!ts)return"";const d=new Date(ts*1000);return d.toLocaleDateString("ru",{day:"2-digit",month:"2-digit"})+" "+d.toLocaleTimeString("ru",{hour:"2-digit",minute:"2-digit"})};
 function save(){try{localStorage.setItem("adm",JSON.stringify({per:st.per,tab:st.tab}))}catch(e){}}
 function chips(){
+ $("#per").style.display=st.tab=="aic"?"none":"";
  $("#per").innerHTML=PER.map(([k,n])=>`<button class="chip ${st.per==k?"on":""}" data-p="${k}">${n}</button>`).join("")+
   `<button class="chip" data-p="re">↻</button>`;
  const todo=st.data?st.data.calls.filter(x=>x.todo).length:0;
@@ -1084,6 +1195,9 @@ document.addEventListener("click",e=>{
  const sr=e.target.closest("[data-stoprec]");if(sr&&confirmStop(sr))post("/admin/api/expense",{stop:sr.dataset.stoprec}).then(r=>r&&load());
  const de=e.target.closest("[data-delexp]");if(de)post("/admin/api/expense",{delete:de.dataset.delexp}).then(r=>r&&load());
  const dr=e.target.closest("[data-delrem]");if(dr)saveRemind(dr.dataset.delrem,true);
+ const ap=e.target.closest("[data-ap]");if(ap){st.ap=ap.dataset.ap;st.aic=null;render();}
+ const as=e.target.closest("[data-aicsrv]");if(as)editSrv(as);
+ const ss=e.target.closest("[data-savesrv]");if(ss)post("/admin/api/aicserver",{slug:ss.dataset.savesrv,usd:Number($("#srv-v").value||0)}).then(r=>{if(r){closeModal();st.aic=null;render();}});
 });
 const findCall=k=>st.data.calls.find(x=>x.key==k)||{};
 const localDT=d=>{const z=n=>String(n).padStart(2,"0");return d.getFullYear()+"-"+z(d.getMonth()+1)+"-"+z(d.getDate())+"T"+z(d.getHours())+":"+z(d.getMinutes())};
@@ -1120,7 +1234,7 @@ async function load(){
  try{
   const r=await fetch("/admin/api?period="+st.per,{headers:{"X-Init-Data":INIT}});
   if(r.status==403){fail("Нет доступа. Откройте панель из бота, в чат которого приходят отчёты.");return;}
-  st.data=await r.json();
+  st.data=await r.json();st.aic=null;
   if(STAFF()){TABS=[["eov","Обзор"],["calls","Звонки"],["crm","Клиенты"]];let sv=null;try{sv=localStorage.getItem("adm_x")}catch(e){}
    if(!sv){st.tab="eov";try{localStorage.setItem("adm_x","1")}catch(e){}}if(!["eov","calls","crm"].includes(st.tab))st.tab="eov";}
   render();
@@ -1135,9 +1249,48 @@ async function deal(key,status,inp){
 }
 function render(){
  const d=st.data;if(!d)return;
- const V={calls,crm,fin:finance,ov,fn,cost,eov};if(!V[st.tab])st.tab="calls";
+ const V={calls,crm,fin:finance,ov,fn,cost,eov,aic};if(!V[st.tab])st.tab="calls";
  chips();$("#app").innerHTML=V[st.tab](d);
  const q=$("#q");if(q&&st.qfocus){q.focus();q.setSelectionRange(q.value.length,q.value.length);}
+}
+function aic(){
+ if(!st.aic||st.aic.period!=st.ap){loadAic();return `<p class="mut" style="padding:20px">Загрузка…</p>`;}
+ const A=st.aic,W=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+ const chipsA=`<div class="chips" style="margin:8px 0 2px">${A.periods.map(([k,n])=>`<button class="chip ${st.ap==k?"on":""}" data-ap="${k}">${n}</button>`).join("")}</div>`;
+ if(!A.items.length)return chipsA+`<div class="card mut">Пока нет клиентов с ИИ-агентом.</div>`;
+ return chipsA+A.items.map(x=>{
+  const mx=Math.max(1,...x.daily.map(y=>y.tg+y.ig)),mw=Math.max(1,...x.weekday);
+  const bars=x.daily.map(y=>`<div title="${y.d}: ${y.tg+y.ig}"><i style="height:${90*y.tg/mx}px;background:var(--tg)"></i><i style="height:${90*y.ig/mx}px;background:var(--ig)"></i></div>`).join("");
+  const wk=x.weekday.map((v,i)=>`<div class="fn"><div class="l"><span>${W[i]}</span><b>${v}</b></div><div class="bar"><i style="width:${100*v/mw}%;background:var(--ac)"></i></div></div>`).join("");
+  return `<div class="card"><h3>${esc(x.company)}</h3>
+  <div class="mut">${x.own_bot?"Свой бот в Telegram":"Через AI Business"}${x.ig?" · Instagram подключён":""} · с ${esc(x.since)} · ${x.days} дн.</div></div>
+  <div class="kpis">
+   <div class="kpi"><b>${x.dialogs}</b><span>диалогов всего</span></div>
+   <div class="kpi"><b>${x.leads}</b><span>оставили контакт · ${pct(x.leads,x.dialogs)}</span></div>
+   <div class="kpi"><b>${money(x.spend)}</b><span>все расходы</span></div>
+   <div class="kpi"><b>${x.dialogs?money(x.per_dialog,3):"—"}</b><span>цена диалога</span></div></div>
+  <div class="card"><h3>Диалоги по платформам</h3><table>
+   ${chRow("Telegram",COL.tg,[x.tg])}${chRow("Instagram",COL.ig,[x.ig_dialogs])}<tr class="tot"><td>Всего</td><td>${x.dialogs}</td></tr></table></div>
+  <div class="card"><h3>Расходы (только ${esc(x.company)})</h3><table>
+   <tr><td>ИИ (Claude)</td><td>${money(x.ai,3)}</td></tr>
+   <tr><td>Голос ElevenLabs <span class="mut">${x.tts_chars.toLocaleString("ru")} кред.${x.stt_min?" · STT "+x.stt_min+" мин":""}</span></td><td>${money(x.tts_usd,3)}</td></tr>
+   <tr><td>Сервер <span class="mut">${money(x.server_m,0)}/мес</span> <button class="lost" style="border:0;border-radius:8px;padding:2px 8px;font:inherit;font-size:12px" data-aicsrv="${esc(x.slug)}" data-v="${x.server_m}">изменить</button></td><td>${money(x.server)}</td></tr>
+   <tr class="tot"><td>Итого</td><td>${money(x.spend)}</td></tr>
+   ${x.leads?`<tr><td>Цена контакта</td><td>${money(x.per_lead)}</td></tr>`:""}</table>
+   <p class="mut" style="margin:6px 0 0">Сервер — доля от суммы в месяц (Railway). ИИ и голос считаются по факту.</p></div>
+  ${x.daily.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>
+   <div class="axis"><span>${x.daily[0].d.slice(5)}</span><span><span class="dot" style="background:var(--tg)"></span>Telegram <span class="dot" style="background:var(--ig);margin-left:6px"></span>Instagram</span><span>${x.daily[x.daily.length-1].d.slice(5)}</span></div></div>`:""}
+  <div class="card"><h3>По дням недели</h3>${wk}</div>`}).join("");
+}
+async function loadAic(){
+ if(st.aicBusy)return;st.aicBusy=true;
+ try{const r=await fetch("/admin/api/aiclients?period="+st.ap,{headers:{"X-Init-Data":INIT}});if(r.ok){st.aic=await r.json();st.ap=st.aic.period;}}catch(e){}
+ st.aicBusy=false;if(st.tab=="aic")render();
+}
+function editSrv(b){
+ modal(`<b>Сервер для ${esc(b.dataset.aicsrv)}</b><div class="mut">Сколько стоит в месяц ($), например Railway-сервис этого бота.</div>
+  <input id="srv-v" class="fi" type="number" step="0.5" min="0" value="${esc(b.dataset.v)}">
+  <div class="btns"><button class="won" data-savesrv="${esc(b.dataset.aicsrv)}">Сохранить</button><button class="lost" data-close>Отмена</button></div>`);
 }
 function chRow(name,col,vals){return `<tr><td><span class="dot" style="background:${col}"></span>${name}</td>${vals.map(v=>`<td>${v}</td>`).join("")}</tr>`}
 function ov(d){
