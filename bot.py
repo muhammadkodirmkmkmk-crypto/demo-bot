@@ -225,7 +225,7 @@ AI Business UZ (businessai.uz), Ташкент. IT и AI-решения для �
 FOLLOWUP_INSTR = """Клиент не ответил на твоё последнее сообщение. Это напоминание {n} из {total}.
 Напиши ОДНО очень короткое, тёплое сообщение (до 12 слов), как живой менеджер. Узбекский — латиницей.
 {stage}
-Нельзя повторять уже заданные вопросы и прошлые формулировки. Нельзя выдумывать факты, цифры, скидки.
+Не здоровайся заново (без «Assalomu alaykum» / «Здравствуйте») — диалог уже идёт. Нельзя повторять уже заданные вопросы и прошлые формулировки. Нельзя выдумывать факты, цифры, скидки.
 Ответ — только текст сообщения, без кавычек и пояснений."""
 
 FOLLOWUP_SINGLE_STAGE = ("Клиент написал всего одно сообщение и больше не отвечал. Это ЕДИНСТВЕННОЕ напоминание: "
@@ -1412,7 +1412,15 @@ def ai_reply(key):
     ag = c.get("agent") or AGENT_MODE or (AGENTS.for_ig_tenant(c.get("tenant")) if c.get("channel") == "ig" else None)
     show = d.get("show") or []
     show = [show] if isinstance(show, str) else show
-    extra = AGENTS.blocks(ag, [x for x in show if x], script) if ag and out else []
+    show = [x for x in show if x]
+    if ag and out and not any(x == "branches" or x.startswith("branch_") for x in show):
+        last_u = []
+        for h in reversed(c["history"]):
+            if h["r"] != "u":
+                break
+            last_u.append(h["t"])
+        show += AGENTS.auto_show(ag, " ".join(last_u))     # lokatsiya so'radi — model unutsa ham xarita
+    extra = AGENTS.blocks(ag, show, script) if ag and out else []
     if out:
         c["error_reported"] = False
         voiced = client_used_voice(c) and deliver_voice(c, out, script, d.get("voice"))
