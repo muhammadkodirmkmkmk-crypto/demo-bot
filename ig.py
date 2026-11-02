@@ -170,7 +170,12 @@ def send_parts(c, parts):
                     for k in sorted(OUR_SENT, key=OUR_SENT.get)[:1000]:
                         OUR_SENT.pop(k, None)
         else:
-            print("IG send error:", st, json.dumps(res)[:300])
+            print("IG send error:", t.get("username"), st, json.dumps(res)[:300])
+            if (res.get("error") or {}).get("code") == 190 and time.time() - TOKEN_ALERT.get(t.get("ig_id"), 0) > 6 * 3600:
+                TOKEN_ALERT[t.get("ig_id")] = time.time()       # token bekor qilindi — admin darhol bilsin
+                notify_admin(f"⚠️ Instagram @{t.get('username')} отключился (сменили пароль или Meta сбросила вход) — "
+                             f"бот не может отвечать клиентам в Instagram. Переподключите: {PUBLIC_URL}/ig")
+            break
 
 # --------------------------------------------------------------------------
 # Webhook
@@ -338,6 +343,9 @@ def on_webhook(payload):
                              f"Заполните: /ig_kb {t['ig_id']} | Название компании\\nописание, услуги, цены")
                 continue
             threading.Thread(target=core.respond, args=(key, stamp), daemon=True).start()
+
+
+TOKEN_ALERT = {}
 
 
 def notify_admin(text):
