@@ -398,6 +398,7 @@ def finish_oauth(code):
     notify_admin(f"✅ Instagram подключён: @{t['username']} (id {ig_id})\n"
                  f"Подписка на сообщения: {'да' if t['subscribed'] else 'НЕТ — ' + json.dumps(sub)[:200]}\n"
                  + ("Это наш аккаунт — бот уже отвечает." if is_own(t) else
+                    f"Привязан к агенту {core.AGENTS.name(core.AGENTS.for_ig_tenant(ig_id))} — бот уже отвечает." if core.AGENTS.for_ig_tenant(ig_id) else
                     f"Если это клиент с готовым агентом — привяжите: /agent_ig <код агента> {t.get('username') or ig_id} (агенты: /agents).\n"
                     f"Иначе заполните базу знаний: /ig_kb {ig_id} | Название компании\\nуслуги, цены, адрес, график"))
     return t, None
@@ -620,9 +621,11 @@ def handle_get(h):
                 print("IG oauth error:", err)
                 respond_html(h, 200, page("Ошибка", f"<h1>Не получилось подключить</h1><p class='mut'>{html.escape(err)}</p>"))
             else:
+                ready = is_own(t) or core.AGENTS.for_ig_tenant(t["ig_id"]) or t.get("kb")
                 respond_html(h, 200, page("Готово", f"<h1>Instagram @{html.escape(t['username'])} подключён ✅</h1>"
-                                          "<p>Ассистент начнёт отвечать в Direct после настройки базы знаний вашей компании. "
-                                          "Мы свяжемся с вами в ближайшее время.</p>"))
+                                          + ("<p>Ассистент уже отвечает в Direct — можно закрыть эту страницу.</p>" if ready else
+                                             "<p>Ассистент начнёт отвечать в Direct после настройки базы знаний вашей компании. "
+                                             "Мы свяжемся с вами в ближайшее время.</p>")))
     elif path == "/ig/webhook":
         if (q.get("hub.mode") or [""])[0] == "subscribe" and IG_VERIFY_TOKEN and \
                 (q.get("hub.verify_token") or [""])[0] == IG_VERIFY_TOKEN:
