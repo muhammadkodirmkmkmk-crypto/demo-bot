@@ -1180,7 +1180,8 @@ def pick_model(c):
     return None
 
 
-PASSIVE_END = re.compile(r"(?i)(istalgan vaqt|исталган вақт|savol(lar)?ingiz bo'?lsa|савол(лар)?ингиз бўлса|bemalol yozing|бемалол ёзинг|"
+GREET_RE = re.compile(r"(?i)^\s*(assalomu alaykum|ассалому алайкум|va alaykum assalom|ва алайкум ассалом|здравствуйте|salom|салом)[!.,]*\s*")
+PASSIVE_END = re.compile(r"(?i)(yordam kerak bo'?lsa|ёрдам керак бўлса|kerak bo'?lsa,? yozing|керак бўлса,? ёзинг|istalgan vaqt|исталган вақт|savol(lar)?ingiz bo'?lsa|савол(лар)?ингиз бўлса|bemalol yozing|бемалол ёзинг|"
                          r"если (у вас )?будут вопросы|пишите в любое время|обращайтесь)")
 CLIENT_DONE = re.compile(r"(?i)(rahmat|рахмат|раҳмат|спасибо|kerakmas|керакмас|не нужно|keyin|кейин|потом|hayr|хайр|до свидания|tushunarli|тушунарли|ok|ок)")
 
@@ -1314,7 +1315,13 @@ def generate_reply(c, script, model=None):
         out = [AGENTS.fix_text(ag, m) for m in out]
     out = [m for m in out if m and not is_repeat(m, c["history"], 0.9) and not looks_like_service_text(m)]
     out = out[:limit]
+    if agent and not first:                     # suhbat davom etmoqda — qayta salomlashmaymiz
+        out = [m for m in (GREET_RE.sub("", m).strip() for m in out) if m]
     data["messages"] = out
+    if out and wrong_output_lang(data.get("_raw") or out, script) and FALLBACK_MODEL and model != FALLBACK_MODEL \
+            and not c.get("no_fallback"):
+        print("Reply in wrong language — retrying with", FALLBACK_MODEL)   # o'zbek mijozga ruscha javob ketmasin
+        return generate_reply(c, script, model=FALLBACK_MODEL)
     if not out and FALLBACK_MODEL and model != FALLBACK_MODEL and WORKING_MODEL["name"] != FALLBACK_MODEL and not c.get("no_fallback"):
         print("Reply empty — retrying with", FALLBACK_MODEL)
         return generate_reply(c, script, model=FALLBACK_MODEL)
