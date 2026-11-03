@@ -1180,6 +1180,18 @@ def pick_model(c):
     return None
 
 
+PASSIVE_END = re.compile(r"(?i)(istalgan vaqt|исталган вақт|savol(lar)?ingiz bo'?lsa|савол(лар)?ингиз бўлса|bemalol yozing|бемалол ёзинг|"
+                         r"если (у вас )?будут вопросы|пишите в любое время|обращайтесь)")
+CLIENT_DONE = re.compile(r"(?i)(rahmat|рахмат|раҳмат|спасибо|kerakmas|керакмас|не нужно|keyin|кейин|потом|hayr|хайр|до свидания|tushunarli|тушунарли|ok|ок)")
+
+
+PRICE_REQ = re.compile(r"(?i)(narx|нарх|нарҳ|tarif|тариф|прайс|prays|price|цен[аыу]|сколько стоит|стоимост)")
+
+
+def last_client_text(c):
+    return next((h["t"] for h in reversed(c["history"]) if h["r"] == "u"), "")
+
+
 def generate_reply(c, script, model=None):
     CTX.ch = chat_channel(c)
     CTX.chat = c
@@ -1265,6 +1277,9 @@ def generate_reply(c, script, model=None):
             problems.append("Только один вопрос в ответе.")
         if first and len(out) < 2:
             problems.append("Первый ответ — 3 коротких сообщения: приветствие, как дела, уточнение.")
+        if agent and PASSIVE_END.search(" ".join(raw_msgs)) and not CLIENT_DONE.search(last_client_text(c)):
+            problems.append("Не пиши «пишите, если будут вопросы» — клиент не прощался. Коротко ответь и задай следующий вопрос по делу "
+                            "(если ещё не знаешь — учился ли он в автошколе и есть ли сертификат).")
         if not out and not problems:
             problems.append("Ответ не распознан. Верни строго один валидный JSON-объект без лишнего текста.")
         wp = wrong_prices(" ".join(raw_msgs))
@@ -1414,13 +1429,17 @@ def ai_reply(key):
     show = d.get("show") or []
     show = [show] if isinstance(show, str) else show
     show = [x for x in show if x]
+    last_u = []
+    for h in reversed(c["history"]):
+        if h["r"] != "u":
+            break
+        last_u.append(h["t"])
     if ag and out and not any(x == "branches" or x.startswith("branch_") for x in show):
-        last_u = []
-        for h in reversed(c["history"]):
-            if h["r"] != "u":
-                break
-            last_u.append(h["t"])
         show += AGENTS.auto_show(ag, " ".join(last_u))     # lokatsiya so'radi — model unutsa ham xarita
+    if ag and out and not show:
+        show = AGENTS.promised_show(ag, out)                # «Mana narxlar:» — blok va'da qilingan, lekin qo'yilmagan
+    if ag and out and not show and PRICE_REQ.search(" ".join(last_u)) and not re.search(r"\d{3}\s?000", " ".join(out)):
+        show = AGENTS.promised_show(ag, ["narxlar:"])       # narx so'radi, javobda narx yo'q — prays blokini yuboramiz
     extra = AGENTS.blocks(ag, show, script) if ag and out else []
     if out:
         c["error_reported"] = False

@@ -70,6 +70,8 @@ HUMAN_STYLE = """КАК ПИСАТЬ — КАК ЖИВОЙ АДМИНИСТРА�
 - В ответе максимум ОДИН вопрос, в конце, и только если он нужен, чтобы двигаться к записи.
 - Без списков с цифрами и markdown (готовые блоки программа отправит сама). Эмодзи — редко, максимум один.
 - Несколько сообщений клиента подряд — ответь на все вместе, коротко.
+- НЕ пиши «Savollaringiz bo'lsa, istalgan vaqt yozing» / «Если будут вопросы — пишите», пока клиент сам не закончил разговор. Вместо этого задай следующий вопрос по логике продажи (первый — про автошколу и сертификат).
+- Клиент только поздоровался — поздоровайся и сразу задай первый вопрос: «Avval biror avtomaktabda o'qiganmisiz, sertifikatingiz bormi?».
 
 """
 
@@ -188,7 +190,7 @@ EXPRESS_PROMPT = """Ты — вежливый, тёплый администра
 «17 yoshdaman» → ["17 yoshdan o'qishni boshlasa bo'ladi.", "Prava 18 yoshda — tug'ilgan kuningizdan keyin imtihon topshirasiz."]
 «нархлар билан таништир» → ["Mana Express kurslarimiz narxlari:", "Avval biror avtomaktabda o'qiganmisiz, sertifikatingiz bormi?"] + "show": "prices"
 «Сколько стоит полный курс и вождение?» → ["Вот все наши программы и цены:", "Вы раньше учились в автошколе?"] + "show": "prices_full"
-«qanday hujjat kerak» → ["Mana kerakli hujjatlar:", "Savol bo'lsa, bemalol yozing."] + "show": "documents"
+«qanday hujjat kerak» → ["Mana kerakli hujjatlar:"] + "show": "documents"
 «o'qish qanday o'tadi» → ["Filialda o'z smenangizda o'qituvchi bilan dars qilasiz, ilovada imtihon savollarini yechasiz.", "Sinovda 2 tadan kam xato qilsangiz — imtihonga tayyorsiz."]
 «Как проходит обучение?» → ["Занимаетесь в филиале на своей смене с преподавателем и решаете вопросы в приложении, как на экзамене.", "Когда на пробных экзаменах не больше 2 ошибок — вы готовы."]
 «imtihondan qo'rqaman» → ["Xavotir olmang, ilovada imtihon xuddi haqiqiydek — bir necha marta yechsangiz, qo'rquv ketadi. O'tolmasangiz, qayta tayyorlash bepul."]
@@ -232,6 +234,22 @@ BRANCH_WORDS = [r"nest|некст|нест|tashkent ?city|ташкент ?сит
                 r"chilonzor|чилонзор|чиланзар|chilanzar|kichik halqa|кичик ҳ?халқа|малая кольцев",
                 r"gorkiy|gorki|горьк|горк|maksim|максим|buyuk ipak|буюк ипак|ulug'?bek|улу[ғг]бек"]
 LOC_REQ = r"(?i)(lokats|локац|location|локейшн|geolok|геолок|manzil|манзил|адрес|adres|qayerda|қаерда|каерда|қаерд|где (вы|наход|филиал)|xarita|харит|карт[ау]|joylashuv|жойлашув|qanday bor|как (доехать|добраться|пройти)|qanday borsa|ориентир|mo'ljal|мўлжал)"
+
+
+PROMISE = [("prices", r"(?i)(narx|нарх|цен|прайс|tarif|тариф|kurslar|курслар)"), ("documents", r"(?i)(hujjat|ҳужжат|хужжат|документ)"),
+           ("shifts", r"(?i)(smena|смена|смен)"), ("branches", r"(?i)(filial|филиал)")]
+
+
+def promised_show(slug, msgs):
+    """Model «Mana narxlar:» deb yozib, blokni qo'ymagan bo'lsa — va'da qilingan blokni o'zimiz qo'shamiz"""
+    import re
+    bl = (get(slug) or {}).get("blocks") or {}
+    for m in msgs:
+        if m.rstrip().endswith(":"):
+            for name, rx in PROMISE:
+                if name in bl and re.search(rx, m):
+                    return [name]
+    return []
 
 
 def auto_show(slug, text):
