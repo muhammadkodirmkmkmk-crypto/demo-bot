@@ -53,6 +53,7 @@ TYPING_DELAY = os.environ.get("TYPING_DELAY", "1") != "0"
 DEBOUNCE_SEC = float(os.environ.get("DEBOUNCE_SEC", "6"))
 HUMAN_PAUSE_HOURS = float(os.environ.get("HUMAN_PAUSE_HOURS", "12"))
 FOLLOWUP_MINUTES = [int(x) for x in os.environ.get("FOLLOWUP_MINUTES", "20,180,1260").split(",") if x.strip()]
+AGENT_FOLLOWUP_MIN = int(os.environ.get("AGENT_FOLLOWUP_MIN", "180"))   # mijoz agenti: javob bermasa — bitta qisqa eslatma
 FOLLOWUP_SINGLE_MIN = int(os.environ.get("FOLLOWUP_SINGLE_MIN", "60"))   # mijoz faqat 1 marta yozgan bo'lsa — bitta eslatma
 IGNORE_MIN_MSGS = int(os.environ.get("IGNORE_MIN_MSGS", "3"))            # bola/hazil/spam: kamida shuncha xabardan keyin jim
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
@@ -1189,8 +1190,8 @@ def generate_reply(c, script, model=None):
         return None
     agent = is_agent_chat(c)
     if agent:                                   # mijoz agenti: batafsilroq va jonli javoblar
-        mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: приветствие; как дела; затем по-человечески ответь на его вопрос (всего 3–4 сообщения)."
-                if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1–3 сообщения: отвечай полно и по-человечески, как живой администратор.")
+        mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: приветствие и коротко ответь на его вопрос (2–3 коротких сообщения)."
+                if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. Обычно 1 короткое сообщение (максимум 2): ответь только на то, что спросили, как живой человек в Telegram. Без лекций.")
     else:
         mode = ("ЭТО ПЕРВЫЙ ОТВЕТ В ДИАЛОГЕ: 3 сообщения — приветствие; как дела; лёгкое уточнение его вопроса."
                 if first else "Диалог уже идёт: НЕ здоровайся и не спрашивай про дела. 1-2 коротких сообщения.")
@@ -1234,7 +1235,7 @@ def generate_reply(c, script, model=None):
             for part in re.split(r"\s*\n+\s*", str(m)):      # Haiku ba'zan ikki xabarni bittaga qo'shadi
                 if part.strip():
                     raw_msgs.append(clean_text(part))
-        limit = (4 if first else 3) if agent else (3 if first else 2)
+        limit = 3 if first else 2
         if len(raw_msgs) > limit:
             raw_msgs = raw_msgs[:limit - 1] + [" ".join(raw_msgs[limit - 1:])]
         raw_msgs = [m for m in raw_msgs if m and not looks_like_service_text(m)]
@@ -1256,8 +1257,8 @@ def generate_reply(c, script, model=None):
         if reps:
             problems.append("Ты повторяешь уже сказанное: «" + reps[0] + "». Скажи по-другому и двигай разговор дальше.")
         if agent:                                   # mijoz agenti: batafsil tushuntirishga ruxsat
-            if sum(len(m) for m in out) > 900 or any(len(m) > 340 for m in out):
-                problems.append("Слишком длинно. Каждое сообщение — до 3 предложений (~40 слов), всего до 3 сообщений.")
+            if sum(len(m) for m in out) > (380 if first else 320) or any(len(m) > 200 for m in out):
+                problems.append("Слишком длинно, это звучит как робот. Ответь только на вопрос: 1–2 коротких сообщения, до 20 слов каждое.")
         elif sum(len(m) for m in out) > MAX_REPLY_CHARS or any(len(m) > MAX_MSG_CHARS for m in out):
             problems.append("Слишком длинно. Каждое сообщение до 16 слов, всего 1-2 сообщения.")
         if sum(m.count("?") for m in out) > (2 if first else 1):
@@ -1589,7 +1590,9 @@ def quiet_now(ts):
 
 
 def followup_plan(c):
-    """Mijoz faqat bir marta yozgan bo'lsa — bitta eslatma; aks holda to'liq jadval"""
+    """Mijoz faqat bir marta yozgan bo'lsa — bitta eslatma; aks holda to'liq jadval. Mijoz agenti — faqat bitta eslatma (3 soatdan keyin)"""
+    if is_agent_chat(c):
+        return [AGENT_FOLLOWUP_MIN]
     if sum(1 for h in c["history"] if h["r"] == "u") <= 1:
         return [FOLLOWUP_SINGLE_MIN]
     return FOLLOWUP_MINUTES
