@@ -239,7 +239,8 @@ def staff_view(d):
             "totals": {"dialogs": d["totals"]["dialogs"], "leads": d["totals"]["leads"], "won": d["totals"]["won"],
                        "hot": sum(f[c]["hot"] for c in f)},
             "needs": sorted(needs.items(), key=lambda x: -x[1])[:10], "ins": staff_insights(d["period"]),
-            "prev_label": {"today": "вчера", "7d": "прошлые 7 дней", "month": "прошлый период", "30d": "прошлые 30 дней"}.get(d["period"], "")}
+            "prev_label": {"today": "вчера", "yesterday": "позавчера"}.get(d["period"], "предыдущим таким же периодом"),
+            "period_label": period_label(d["period"])}
 
 # --------------------------------------------------------------------------
 # Ma'lumot yig'ish
@@ -264,23 +265,65 @@ def eleven_subscription():
     return v
 
 
+PERIODS = [("today", "Сегодня"), ("yesterday", "Вчера"), ("7d", "7 дней"), ("30d", "30 дней"), ("month", "Этот месяц"),
+           ("lastmonth", "Прошлый месяц"), ("quarter", "Квартал"), ("year", "Год"), ("all", "Всё время")]
+
+
 def period_range(period):
+    """Davr: tayyor (today/yesterday/7d/30d/month/lastmonth/quarter/year) yoki o'zingizniki «c:YYYY-MM-DD:YYYY-MM-DD»"""
     now = datetime.now(core.TZ)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    period = str(period or "30d")
+    e = today
     if period == "today":
         start = today
+    elif period == "yesterday":
+        start = e = today - timedelta(days=1)
     elif period == "7d":
         start = today - timedelta(days=6)
     elif period == "month":
         start = today.replace(day=1)
+    elif period == "lastmonth":
+        e = today.replace(day=1) - timedelta(days=1)
+        start = e.replace(day=1)
+    elif period == "quarter":
+        start = today.replace(month=3 * ((today.month - 1) // 3) + 1, day=1)
+    elif period == "year":
+        start = today - timedelta(days=364)
+    elif period == "all":
+        start = today - timedelta(days=729)
+    elif period.startswith("c:"):
+        try:
+            a, b = period[2:].split(":")[:2]
+            start = datetime.strptime(a, "%Y-%m-%d").replace(tzinfo=core.TZ)
+            e = datetime.strptime(b, "%Y-%m-%d").replace(tzinfo=core.TZ)
+            if e < start:
+                start, e = e, start
+            e = min(e, today)
+            start = max(min(start, e), e - timedelta(days=730))
+            period = "c:" + start.strftime("%Y-%m-%d") + ":" + e.strftime("%Y-%m-%d")
+        except Exception:
+            period, start, e = "30d", today - timedelta(days=29), today
     else:
         period, start = "30d", today - timedelta(days=29)
     days = []
     d = start
-    while d <= today:
+    while d <= e:
         days.append(d.strftime("%Y-%m-%d"))
         d += timedelta(days=1)
     return period, start.timestamp(), days
+
+
+def period_end(days):
+    return datetime.strptime(days[-1], "%Y-%m-%d").replace(tzinfo=core.TZ).timestamp() + 86400
+
+
+def period_label(period):
+    if str(period).startswith("c:"):
+        a, b = period[2:].split(":")
+        f = lambda x: x[8:10] + "." + x[5:7]
+        return f(a) if a == b else f(a) + "–" + f(b)
+    return dict(PERIODS).get(period, period)
 
 
 def chat_first_ts(c):
@@ -409,13 +452,13 @@ def build(period="30d"):
         hist = c.get("history", [])
         first = chat_first_ts(c)
         deal = c.get("deal") or {}
-        if deal.get("status") == "won" and (deal.get("ts") or 0) >= start:
+        if deal.get("status") == "won" and start <= (deal.get("ts") or 0) < period_end(days):
             revenue += float(deal.get("amount") or 0)
             proc[ch]["revenue"] += float(deal.get("amount") or 0)
             dd = datetime.fromtimestamp(deal["ts"], core.TZ).strftime("%Y-%m-%d")
             if dd in daily:
                 daily[dd]["won"] += 1
-        if first < start:
+        if first < start or first >= period_end(days):
             continue
         fl = funnel_flags(c)
         for k in funnel[ch]:
@@ -526,6 +569,7 @@ def build(period="30d"):
         "daily": [{"d": d, **daily[d], "cost": round(core.usage_cost(usage[d]) + sum(
             s.get("tts_chars", 0) for s in stats[d].values()) * usd_per_credit, 3)} for d in days],
         "business": sorted(biz.items(), key=lambda x: -x[1])[:8],
+        "period_label": period_label(period), "periods": PERIODS,
         "leads": leads[:150], "ch_names": CH_NAMES, "calls": calls, "crm": crm_list(chats), "pipe": PIPE,
     }
 
@@ -771,7 +815,7 @@ def set_deal(key, status, amount=0):
 def text_summary(period="today"):
     d = build(period)
     t = d["totals"]
-    title = {"today": "Сегодня", "7d": "7 дней", "30d": "30 дней", "month": "Этот месяц"}[d["period"]]
+    title = period_label(d["period"])
     lines = [f"📊 {title}", ""]
     for ch in CHANNELS:
         f = d["funnel"][ch]
@@ -799,8 +843,8 @@ BRANCH_NAMES = ["Nest One", "Ойбек", "Чиланзар", "Максим Го
 def staff_insights(period="30d"):
     """Xodim paneli va kunlik hisobot uchun: pulsiz tahlil (soatlar, kunlar, kurslar, filiallar, til, oldingi davr bilan solishtirish)"""
     period, start, days = period_range(period)
-    now = time.time()
-    span = max(3600.0, now - start)
+    end = min(period_end(days), time.time())
+    span = max(3600.0, end - start)
     p0 = start - span
     with core.LOCK:
         chats = json.loads(json.dumps(core.STATE["chats"]))
@@ -826,10 +870,10 @@ def staff_insights(period="30d"):
             prev["leads"] += int(fl["lead"])
             prev["hot"] += int(fl["hot"])
         for h in hist:
-            if h["r"] == "u" and (h.get("ts") or 0) >= start:
+            if h["r"] == "u" and start <= (h.get("ts") or 0) < end:
                 hours[datetime.fromtimestamp(h["ts"], core.TZ).hour] += 1
                 voice += int(h["t"].startswith(core.STT.VOICE_PREFIX))
-        if first < start:
+        if first < start or first >= end:
             continue
         week[datetime.fromtimestamp(first, core.TZ).weekday()] += 1
         text = " ".join(h["t"] for h in hist if h["r"] == "u")
@@ -986,16 +1030,12 @@ def set_aic_server(slug, usd):
 
 def ai_clients(period="month"):
     today = datetime.now(core.TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-    if period == "7d":
-        start = today - timedelta(days=6)
-    elif period == "quarter":
-        start = today.replace(month=3 * ((today.month - 1) // 3) + 1, day=1)
-    elif period == "all":
-        start = None
+    if period == "all":
+        start, t1 = None, today.strftime("%Y-%m-%d")
     else:
-        period, start = "month", today.replace(day=1)
+        period, st0, dd = period_range(period)
+        start, t1 = datetime.fromtimestamp(st0, core.TZ), dd[-1]
     t0 = start.strftime("%Y-%m-%d") if start else "0000"
-    t1 = today.strftime("%Y-%m-%d")
     sub = eleven_subscription()
     usd_per_credit = ELEVEN_PLAN_USD / max(1, (sub or {}).get("limit") or ELEVEN_PLAN_CREDITS)
     with core.LOCK:
@@ -1063,7 +1103,7 @@ def ai_clients(period="month"):
                                "cost": round((sel.get(d) or {}).get("ai", 0) + (sel.get(d) or {}).get("tts", 0) * usd_per_credit, 3)}
                               for d in span[-120:]]})
     out.sort(key=lambda x: -x["dialogs"])
-    return {"period": period, "periods": AIC_PERIODS, "items": out}
+    return {"period": period, "label": period_label(period) if period != "all" else "Всё время", "items": out}
 
 # --------------------------------------------------------------------------
 # HTTP
@@ -1228,6 +1268,8 @@ select.fi{appearance:auto}
 .cnt{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--bad);color:#fff;font-size:11px;line-height:18px}
 .filters{display:flex;gap:6px;margin-top:4px}.hidden{display:none}
 #err{display:none;padding:30px 16px;text-align:center}
+@media(min-width:700px){#per{flex-wrap:wrap}}
+#per .chip.on{box-shadow:0 2px 8px #2a7de155}
 .hero{border-radius:18px;padding:16px;margin:8px 0 10px;color:#fff;background:linear-gradient(135deg,#1f6fd6 0%,#7b3fe4 55%,#d6337a 100%);box-shadow:0 6px 20px #1f6fd633}
 .hero h2{margin:0;font-size:19px}.hero .sub{opacity:.85;font-size:13px;margin-top:2px}
 .hero .big{display:flex;gap:18px;margin-top:12px;flex-wrap:wrap}.hero .big div b{display:block;font-size:30px;line-height:1.1;font-variant-numeric:tabular-nums}
@@ -1269,7 +1311,20 @@ if(tg){tg.ready();tg.expand();
  try{tg.disableVerticalSwipes&&tg.disableVerticalSwipes();}catch(e){}                              // свайп вниз не закрывает панель
 }
 const INIT=tg?tg.initData:"";
-const PER=[["today","Сегодня"],["7d","7 дней"],["month","Месяц"],["30d","30 дней"]];
+const PER=[["today","Сегодня"],["yesterday","Вчера"],["7d","7 дней"],["30d","30 дней"],["month","Этот месяц"],["lastmonth","Прошлый месяц"],["quarter","Квартал"],["year","Год"],["all","Всё время"]];
+const fmtD=x=>x.slice(8,10)+"."+x.slice(5,7)+"."+x.slice(2,4);
+const perLabel=p=>{if(String(p).startsWith("c:")){const[a,b]=p.slice(2).split(":");return a==b?fmtD(a):fmtD(a)+" – "+fmtD(b)}const f=PER.find(x=>x[0]==p);return f?f[1]:p};
+const isoD=t=>{const d=new Date(t);return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")};
+function customPer(){
+ const c=String(st.per).startsWith("c:")?st.per.slice(2).split(":"):[isoD(Date.now()-6*864e5),isoD(Date.now())];
+ const q=(n,a,b)=>`<button class="chip" style="background:var(--bg2)" data-qr="${a}:${b}">${n}</button>`;
+ const D=k=>isoD(Date.now()-k*864e5);
+ modal(`<b style="font-size:17px">📅 Свой период</b><div class="mut">Выберите даты «с» и «по» — включительно.</div>
+  <label class="fl">С</label><input id="pf" class="fi" type="date" value="${c[0]}" max="${isoD(Date.now())}">
+  <label class="fl">По</label><input id="pt" class="fi" type="date" value="${c[1]}" max="${isoD(Date.now())}">
+  <div class="chips wrap" style="margin-top:10px">${q("14 дней",D(13),D(0))}${q("60 дней",D(59),D(0))}${q("90 дней",D(89),D(0))}${q("Прошлая неделя",D(new Date().getDay()==0?13:new Date().getDay()+6),D(new Date().getDay()==0?7:new Date().getDay()))}</div>
+  <button class="bigbtn" data-applyper>Показать</button><button class="bigbtn sec" data-close>Отмена</button>`);
+}
 let TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"],["aic","ИИ-клиенты"]];
 const STAFF=()=>st.data&&st.data.role=="staff";
 const COL={tg:"var(--tg)",ig:"var(--ig)",manual:"#8a8f98"};
@@ -1282,14 +1337,18 @@ const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&g
 const when=ts=>{if(!ts)return"";const d=new Date(ts*1000);return d.toLocaleDateString("ru",{day:"2-digit",month:"2-digit"})+" "+d.toLocaleTimeString("ru",{hour:"2-digit",minute:"2-digit"})};
 function save(){try{localStorage.setItem("adm",JSON.stringify({per:st.per,tab:st.tab}))}catch(e){}}
 function chips(){
- $("#per").style.display=st.tab=="aic"?"none":"";
+ const cu=String(st.per).startsWith("c:");
  $("#per").innerHTML=PER.map(([k,n])=>`<button class="chip ${st.per==k?"on":""}" data-p="${k}">${n}</button>`).join("")+
-  `<button class="chip" data-p="re">↻</button>`;
+  `<button class="chip ${cu?"on":""}" data-custom>📅 ${cu?perLabel(st.per):"Свой период"}</button><button class="chip" data-p="re">↻</button>`;
+ const on=$("#per .chip.on");if(on&&!st.perScrolled){st.perScrolled=1;on.scrollIntoView({inline:"center",block:"nearest"});}
  const todo=st.data?st.data.calls.filter(x=>x.todo).length:0;
  $("#tabs").innerHTML=TABS.map(([k,n])=>`<button class="tab ${st.tab==k?"on":""}" data-t="${k}">${n}${k=="calls"&&todo?` <span class="cnt">${todo}</span>`:""}</button>`).join("");
 }
 document.addEventListener("input",e=>{if(e.target.id=="q"){st.q=e.target.value;st.qfocus=true;render();}});
 document.addEventListener("click",e=>{
+ if(e.target.closest("[data-custom]")){customPer();return;}
+ const qr=e.target.closest("[data-qr]");if(qr){const[a,b]=qr.dataset.qr.split(":");$("#pf").value=a;$("#pt").value=b;return;}
+ if(e.target.closest("[data-applyper]")){const a=$("#pf").value,b=$("#pt").value;if(a&&b){st.per="c:"+(a<b?a+":"+b:b+":"+a);st.aic=null;closeModal();save();load();}return;}
  const p=e.target.closest("[data-p]"),t=e.target.closest("[data-t]"),l=e.target.closest(".lead .top"),f=e.target.closest("[data-lf]"),dl=e.target.closest("[data-deal]");
  if(p){if(p.dataset.p!="re")st.per=p.dataset.p;save();load();}
  if(t){st.tab=t.dataset.t;save();chips();render();}
@@ -1356,7 +1415,7 @@ async function load(){
  try{
   const r=await fetch("/admin/api?period="+st.per,{headers:{"X-Init-Data":INIT}});
   if(r.status==403){fail("Нет доступа. Откройте панель из бота, в чат которого приходят отчёты.");return;}
-  st.data=await r.json();st.aic=null;
+  st.data=await r.json();st.aic=null;if(st.data.period)st.per=st.data.period;
   if(STAFF()){TABS=[["eov","Обзор"],["calls","Звонки"],["crm","Клиенты"]];let sv=null;try{sv=localStorage.getItem("adm_x")}catch(e){}
    if(!sv){st.tab="eov";try{localStorage.setItem("adm_x","1")}catch(e){}}if(!["eov","calls","crm"].includes(st.tab))st.tab="eov";}
   render();
@@ -1376,13 +1435,13 @@ function render(){
  const q=$("#q");if(q&&st.qfocus){q.focus();q.setSelectionRange(q.value.length,q.value.length);}
 }
 function aic(){
- if(!st.aic||st.aic.period!=st.ap){loadAic();return `<p class="mut" style="padding:20px">Загрузка…</p>`;}
+ if(!st.aic||st.aic.period!=st.per){loadAic();return `<p class="mut" style="padding:20px">Загрузка…</p>`;}
  const A=st.aic,W=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
- const chipsA=`<div class="chips" style="margin:8px 0 2px">${A.periods.map(([k,n])=>`<button class="chip ${st.ap==k?"on":""}" data-ap="${k}">${n}</button>`).join("")}</div>`;
+ const chipsA="";
  if(!A.items.length)return chipsA+`<div class="card mut">Пока нет клиентов с ИИ-агентом.</div>`;
  const CA="#7b3fe4",CV="#e69a28",CS="#0f9d8f";
  const all=A.items.reduce((s,x)=>({spend:s.spend+x.spend,ai:s.ai+x.ai,tts:s.tts+x.tts_usd,srv:s.srv+x.server,d:s.d+x.dialogs,l:s.l+x.leads}),{spend:0,ai:0,tts:0,srv:0,d:0,l:0});
- const head=A.items.length>1?`<div class="hero cost"><h2>Все ИИ-клиенты</h2><div class="sub">${A.periods.find(p=>p[0]==A.period)[1]} · ${A.items.length} клиентов</div>
+ const head=A.items.length>1?`<div class="hero cost"><h2>Все ИИ-клиенты</h2><div class="sub">${esc(A.label)} · ${A.items.length} клиентов</div>
   <div class="big"><div><b>${money(all.spend)}</b><span>расходы всего</span></div><div><b>${all.d}</b><span>диалогов</span></div><div><b>${all.l}</b><span>контактов</span></div></div></div>`:"";
  return chipsA+head+A.items.map(x=>{
   const mx=Math.max(1,...x.daily.map(y=>y.tg+y.ig)),mw=Math.max(1,...x.weekday),srvDay=x.server_m/30;
@@ -1394,7 +1453,7 @@ function aic(){
   const share=(v,c,n,extra)=>`<div class="cline"><span class="sw" style="background:${c}"></span>${n}${extra?` <span class="mut">${extra}</span>`:""}<b>${money(v,v<1?3:2)} <span class="mut">${Math.round(100*v/sp)}%</span></b></div>`;
   const tgD=x.tg,igD=x.ig_dialogs,tot=Math.max(1,tgD+igD),deg=360*tgD/tot;
   return `<div class="hero cost"><h2>${esc(x.company)}</h2>
-  <div class="sub">${x.own_bot?"Свой бот в Telegram":"Через AI Business"}${x.ig?" · Instagram подключён":""} · данные с ${esc(x.since)} · ${x.days} дн.</div>
+  <div class="sub">${esc(A.label)} · ${x.own_bot?"свой бот в Telegram":"через AI Business"}${x.ig?" · Instagram подключён":""} · ${x.days} дн.</div>
   <div class="big"><div><b>${money(x.spend)}</b><span>расходы за период</span></div><div><b>${money(perDay*30,0)}</b><span>прогноз в месяц</span></div><div><b>${x.dialogs?money(x.per_dialog,3):"—"}</b><span>цена диалога</span></div></div></div>
   <div class="kpis g4">
    <div class="kc" style="--c:var(--tg)"><span class="ic">💬</span><b>${x.dialogs}</b><span>диалогов</span></div>
@@ -1420,7 +1479,7 @@ function aic(){
 }
 async function loadAic(){
  if(st.aicBusy)return;st.aicBusy=true;
- try{const r=await fetch("/admin/api/aiclients?period="+st.ap,{headers:{"X-Init-Data":INIT}});if(r.ok){st.aic=await r.json();st.ap=st.aic.period;}}catch(e){}
+ const want=st.per;try{const r=await fetch("/admin/api/aiclients?period="+encodeURIComponent(want),{headers:{"X-Init-Data":INIT}});if(r.ok){st.aic=await r.json();st.aic.period=want;}}catch(e){}
  st.aicBusy=false;if(st.tab=="aic")render();
 }
 function editSrv(b){
@@ -1457,7 +1516,7 @@ function eov(d){
  const waiting=d.calls.filter(x=>x.todo);
  const tgD=p.tg.dialogs,igD=p.ig.dialogs,tot=Math.max(1,tgD+igD),deg=360*tgD/tot;
  const conv=t.dialogs?Math.round(100*t.leads/t.dialogs):0;
- const PL={today:"сегодня","7d":"за 7 дней",month:"за месяц","30d":"за 30 дней"}[per]||"";
+ const PL=d.period_label||perLabel(per);
  const mx=Math.max(1,...days.map(x=>x.tg+x.ig)),mxl=Math.max(1,...days.map(x=>x.leads));
  const bars=days.map(x=>`<div title="${x.d}: Telegram ${x.tg}, Instagram ${x.ig}"><i style="height:${90*x.tg/mx}px;background:var(--tg);border-radius:0 0 3px 3px"></i><i style="height:${90*x.ig/mx}px;background:var(--ig);border-radius:3px 3px 0 0"></i></div>`).join("");
  const lbars=days.map(x=>`<div title="${x.d}: ${x.leads} заявок"><i style="height:${90*x.leads/mxl}px;background:linear-gradient(#34c77b,#2e9e5b);border-radius:3px"></i></div>`).join("");
@@ -1473,7 +1532,7 @@ function eov(d){
  const C1=["#7b3fe4","#2a7de1","#e69a28","#2e9e5b","#d6337a"],C2=["#0f9d8f","#2a9fd8","#e0582f","#9b59b6"];
  const lg=I.lang||{},ln=Math.max(1,(lg.uz_lat||0)+(lg.uz_cyr||0)+(lg.ru||0));
  const kc=(c,ic,v,l,x)=>`<div class="kc" style="--c:${c}"><span class="ic">${ic}</span><b>${v}${x||""}</b><span>${l}</span></div>`;
- return `<div class="hero"><h2>${esc(d.company||"Отчёт")}</h2><div class="sub">Аналитика ${PL}${d.prev_label?" · ▲▼ — сравнение с "+d.prev_label:""}</div>
+ return `<div class="hero"><h2>${esc(d.company||"Отчёт")}</h2><div class="sub">📅 ${esc(PL)}${d.prev_label?" · ▲▼ — сравнение с "+d.prev_label:""}</div>
   <div class="big"><div><b>${t.dialogs}</b><span>новых диалогов</span></div><div><b>${t.leads}</b><span>оставили номер</span></div><div><b>${conv}%</b><span>конверсия</span></div></div></div>
  <div class="kpis g4">
   ${kc("#2a7de1","💬",t.dialogs,"новых диалогов",dl(t.dialogs,pr.dialogs))}
