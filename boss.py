@@ -504,6 +504,12 @@ def notify_new_dialog(c, text):
 
 
 def send_digest():
+    if core.AGENT_MODE:                              # mijoz boti: faqat foydali ma'lumot, xarajatlarsiz
+        text = core.ADMIN.text_staff_digest()[:4000]
+        for target in core.report_targets({"history": [], "chat_id": "digest"}):
+            core.tg("sendMessage", {"chat_id": target, "text": text,
+                                    "reply_markup": {"inline_keyboard": [[{"text": "📋 Открыть лиды", "web_app": {"url": core.ADMIN.panel_url()}}]]}})
+        return
     d = core.ADMIN.build("today")
     calls = [x for x in d["calls"] if x["todo"]]
     lines = [core.ADMIN.text_summary("today")]

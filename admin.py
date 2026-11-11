@@ -10,6 +10,7 @@ Muhit o'zgaruvchilari (ixtiyoriy):
 """
 import os
 import json
+import re
 import time
 import hmac
 import hashlib
@@ -237,7 +238,8 @@ def staff_view(d):
             "daily": [{k: v for k, v in x.items() if k != "cost"} for x in d["daily"]],
             "totals": {"dialogs": d["totals"]["dialogs"], "leads": d["totals"]["leads"], "won": d["totals"]["won"],
                        "hot": sum(f[c]["hot"] for c in f)},
-            "needs": sorted(needs.items(), key=lambda x: -x[1])[:10]}
+            "needs": sorted(needs.items(), key=lambda x: -x[1])[:10], "ins": staff_insights(d["period"]),
+            "prev_label": {"today": "вчера", "7d": "прошлые 7 дней", "month": "прошлый период", "30d": "прошлые 30 дней"}.get(d["period"], "")}
 
 # --------------------------------------------------------------------------
 # Ma'lumot yig'ish
@@ -786,6 +788,100 @@ def text_summary(period="today"):
     return "\n".join(lines)
 
 
+COURSE_RX = [("Express 7", r"(?i)express ?7|экспресс ?7|ekspress ?7|7 ?кун|7 ?kun|7 ?дней"),
+             ("Express 10", r"(?i)express ?10|экспресс ?10|ekspress ?10|10 ?кун|10 ?kun|10 ?дней"),
+             ("VIP", r"(?i)\bvip\b|вип"),
+             ("Полный курс «B»", r"(?i)(\bb\b|«b»|\bб\b) ?(toifa|тоифа|категор|kurs|курс)|noldan|нолдан|с нуля|haydash|ҳайдаш|хайдаш|вожден|prava|права"),
+             ("Individual / Premium", r"(?i)individual|индивидуал|premium|премиум")]
+BRANCH_NAMES = ["Nest One", "Ойбек", "Чиланзар", "Максим Горький"]
+
+
+def staff_insights(period="30d"):
+    """Xodim paneli va kunlik hisobot uchun: pulsiz tahlil (soatlar, kunlar, kurslar, filiallar, til, oldingi davr bilan solishtirish)"""
+    period, start, days = period_range(period)
+    now = time.time()
+    span = max(3600.0, now - start)
+    p0 = start - span
+    with core.LOCK:
+        chats = json.loads(json.dumps(core.STATE["chats"]))
+    chats.update(json.loads(json.dumps(remote_ig_chats())))
+    hours = [0] * 24
+    week = [0] * 7
+    courses = {n: 0 for n, _ in COURSE_RX}
+    branches = {n: 0 for n in BRANCH_NAMES}
+    lang = {"uz_lat": 0, "uz_cyr": 0, "ru": 0}
+    voice = 0
+    prev = {"dialogs": 0, "leads": 0, "hot": 0}
+    cur_new_leads = []
+    bw = getattr(core.AGENTS, "BRANCH_WORDS", [])
+    for key, c in chats.items():
+        ch = core.chat_channel(c)
+        if ch not in CHANNELS:
+            continue
+        first = chat_first_ts(c)
+        hist = c.get("history", [])
+        if p0 <= first < start:
+            fl = funnel_flags(c)
+            prev["dialogs"] += 1
+            prev["leads"] += int(fl["lead"])
+            prev["hot"] += int(fl["hot"])
+        for h in hist:
+            if h["r"] == "u" and (h.get("ts") or 0) >= start:
+                hours[datetime.fromtimestamp(h["ts"], core.TZ).hour] += 1
+                voice += int(h["t"].startswith(core.STT.VOICE_PREFIX))
+        if first < start:
+            continue
+        week[datetime.fromtimestamp(first, core.TZ).weekday()] += 1
+        text = " ".join(h["t"] for h in hist if h["r"] == "u")
+        for n, rx in COURSE_RX:
+            courses[n] += int(bool(re.search(rx, text)))
+        for n, rx in zip(BRANCH_NAMES, bw):
+            branches[n] += int(bool(re.search("(?i)" + rx, text)))
+        sc = c.get("script") or ""
+        if sc in lang:
+            lang[sc] += 1
+        if c.get("lead_sent"):
+            f = c.get("facts") or {}
+            cur_new_leads.append({"who": c.get("name") or "Клиент", "ch": ch, "ts": first,
+                                  "want": (f.get("offer") or f.get("need") or "")[:80]})
+    peak = max(range(24), key=lambda i: hours[i]) if any(hours) else None
+    return {"hours": hours, "week": week, "peak": peak, "voice": voice, "lang": lang, "prev": prev,
+            "courses": sorted(courses.items(), key=lambda x: -x[1]), "branches": sorted(branches.items(), key=lambda x: -x[1]),
+            "recent_leads": sorted(cur_new_leads, key=lambda x: -x["ts"])[:6]}
+
+
+def text_staff_digest():
+    """Mijoz (Express) uchun kunlik hisobot — tokenlar, server va AI xarajatlarisiz"""
+    d = build("today")
+    ins = staff_insights("today")
+    t, f, pr = d["totals"], d["funnel"], ins["prev"]
+    hot = sum(f[c]["hot"] for c in f)
+    def delta(a, b):
+        return "" if not b and not a else (" ↑" + str(a - b) if a > b else (" ↓" + str(b - a) if a < b else " ="))
+    name = core.AGENTS.name(core.AGENT_MODE) if core.AGENT_MODE else "Итоги"
+    lines = [f"📊 {name} — итоги дня {datetime.now(core.TZ).strftime('%d.%m')}", "",
+             f"💬 Новых диалогов: {t['dialogs']}{delta(t['dialogs'], pr['dialogs'])}",
+             f"   Telegram {d['proc']['tg']['dialogs']} · Instagram {d['proc']['ig']['dialogs']}",
+             f"📞 Оставили номер: {t['leads']}{delta(t['leads'], pr['leads'])} · конверсия {round(100 * t['leads'] / t['dialogs']) if t['dialogs'] else 0}%",
+             f"🔥 Горячих: {hot} · ✅ Записались: {t['won']}"]
+    top_c = [f"{n} {v}" for n, v in ins["courses"] if v][:3]
+    if top_c:
+        lines.append("🎯 Спрашивали: " + ", ".join(top_c))
+    top_b = [f"{n} {v}" for n, v in ins["branches"] if v][:3]
+    if top_b:
+        lines.append("📍 Филиалы: " + ", ".join(top_b))
+    if ins["peak"] is not None:
+        lines.append(f"⏰ Больше всего писали в {ins['peak']:02d}:00–{(ins['peak'] + 1) % 24:02d}:00")
+    calls = [x for x in d["calls"] if x["todo"]]
+    if calls:
+        lines.append(f"\n📲 Позвонить ({len(calls)}):")
+        lines += [f"• {x['who']} {x['phone']}" + (f" — {x['want'][:80]}" if x.get("want") else "") for x in calls[:10]]
+    elif t["dialogs"]:
+        lines.append("\n👍 Всем, кто оставил номер, уже позвонили.")
+    lines.append("\n↑/↓ — по сравнению со вчера")
+    return "\n".join(lines)
+
+
 def text_leads():
     d = build("30d")
     top = [x for x in d["leads"] if x["lvl"] >= 4][:10]
@@ -1132,6 +1228,32 @@ select.fi{appearance:auto}
 .cnt{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--bad);color:#fff;font-size:11px;line-height:18px}
 .filters{display:flex;gap:6px;margin-top:4px}.hidden{display:none}
 #err{display:none;padding:30px 16px;text-align:center}
+.hero{border-radius:18px;padding:16px;margin:8px 0 10px;color:#fff;background:linear-gradient(135deg,#1f6fd6 0%,#7b3fe4 55%,#d6337a 100%);box-shadow:0 6px 20px #1f6fd633}
+.hero h2{margin:0;font-size:19px}.hero .sub{opacity:.85;font-size:13px;margin-top:2px}
+.hero .big{display:flex;gap:18px;margin-top:12px;flex-wrap:wrap}.hero .big div b{display:block;font-size:30px;line-height:1.1;font-variant-numeric:tabular-nums}
+.hero .big div span{font-size:12px;opacity:.85}
+.kc{border-radius:16px;padding:12px;position:relative;overflow:hidden;background:var(--bg)}
+.kc b{display:block;font-size:24px;font-variant-numeric:tabular-nums}.kc span{font-size:12px;color:var(--mut)}
+.kc:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--c)}
+.kc .ic{position:absolute;right:10px;top:10px;font-size:20px;opacity:.9}
+.dl{font-size:12px;font-weight:600;margin-left:4px}.dl.up{color:var(--ok)}.dl.dn{color:var(--bad)}
+.donut{width:118px;height:118px;border-radius:50%;flex:none;display:grid;place-items:center}
+.donut>div{width:78px;height:78px;border-radius:50%;background:var(--bg);display:grid;place-items:center;text-align:center;font-size:12px;color:var(--mut)}
+.donut>div b{display:block;font-size:20px;color:var(--tx)}
+.split{display:flex;gap:16px;align-items:center}.leg div{display:flex;align-items:center;gap:6px;margin:6px 0;font-size:14px}.leg b{margin-left:auto;padding-left:10px}
+.fnl{margin:8px 0}.fnl .l{display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px}
+.fnl .t{height:26px;border-radius:8px;background:var(--bg2);overflow:hidden}.fnl .t i{display:flex;align-items:center;height:100%;border-radius:8px;color:#fff;font-size:12px;font-weight:600;padding-left:8px;white-space:nowrap}
+.hrs{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;margin-top:6px}.hrs i{height:30px;border-radius:4px}
+.hax{display:flex;justify-content:space-between;color:var(--mut);font-size:10px;margin-top:3px}
+.tagb{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:14px}.tagb .n{width:46%;flex:none}.tagb .t{flex:1;height:10px;border-radius:5px;background:var(--bg2);overflow:hidden}
+.tagb .t i{display:block;height:100%;border-radius:5px}.tagb b{width:28px;text-align:right}
+.wl{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0}.wl+.wl{border-top:1px solid var(--bg2)}
+.pill{font-size:11px;padding:2px 7px;border-radius:8px;color:#fff}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media(min-width:700px){.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}}
+.stack{height:14px;border-radius:7px;overflow:hidden;display:flex;background:var(--bg2);margin:8px 0}.stack i{display:block;height:100%}
+.cline{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px}.cline .sw{width:10px;height:10px;border-radius:3px;flex:none}.cline b{margin-left:auto}
+.hero.cost{background:linear-gradient(135deg,#0f766e 0%,#1f6fd6 60%,#4338ca 100%)}
+
 </style></head><body>
 <header>
  <div class="chips" id="per"></div>
@@ -1258,29 +1380,43 @@ function aic(){
  const A=st.aic,W=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
  const chipsA=`<div class="chips" style="margin:8px 0 2px">${A.periods.map(([k,n])=>`<button class="chip ${st.ap==k?"on":""}" data-ap="${k}">${n}</button>`).join("")}</div>`;
  if(!A.items.length)return chipsA+`<div class="card mut">Пока нет клиентов с ИИ-агентом.</div>`;
- return chipsA+A.items.map(x=>{
-  const mx=Math.max(1,...x.daily.map(y=>y.tg+y.ig)),mw=Math.max(1,...x.weekday);
-  const bars=x.daily.map(y=>`<div title="${y.d}: ${y.tg+y.ig}"><i style="height:${90*y.tg/mx}px;background:var(--tg)"></i><i style="height:${90*y.ig/mx}px;background:var(--ig)"></i></div>`).join("");
-  const wk=x.weekday.map((v,i)=>`<div class="fn"><div class="l"><span>${W[i]}</span><b>${v}</b></div><div class="bar"><i style="width:${100*v/mw}%;background:var(--ac)"></i></div></div>`).join("");
-  return `<div class="card"><h3>${esc(x.company)}</h3>
-  <div class="mut">${x.own_bot?"Свой бот в Telegram":"Через AI Business"}${x.ig?" · Instagram подключён":""} · с ${esc(x.since)} · ${x.days} дн.</div></div>
-  <div class="kpis">
-   <div class="kpi"><b>${x.dialogs}</b><span>диалогов всего</span></div>
-   <div class="kpi"><b>${x.leads}</b><span>оставили контакт · ${pct(x.leads,x.dialogs)}</span></div>
-   <div class="kpi"><b>${money(x.spend)}</b><span>все расходы</span></div>
-   <div class="kpi"><b>${x.dialogs?money(x.per_dialog,3):"—"}</b><span>цена диалога</span></div></div>
-  <div class="card"><h3>Диалоги по платформам</h3><table>
-   ${chRow("Telegram",COL.tg,[x.tg])}${chRow("Instagram",COL.ig,[x.ig_dialogs])}<tr class="tot"><td>Всего</td><td>${x.dialogs}</td></tr></table></div>
-  <div class="card"><h3>Расходы (только ${esc(x.company)})</h3><table>
-   <tr><td>ИИ (Claude)</td><td>${money(x.ai,3)}</td></tr>
-   <tr><td>Голос ElevenLabs <span class="mut">${x.tts_chars.toLocaleString("ru")} кред.${x.stt_min?" · STT "+x.stt_min+" мин":""}</span></td><td>${money(x.tts_usd,3)}</td></tr>
-   <tr><td>Сервер <span class="mut">${money(x.server_m,0)}/мес</span> <button class="lost" style="border:0;border-radius:8px;padding:2px 8px;font:inherit;font-size:12px" data-aicsrv="${esc(x.slug)}" data-v="${x.server_m}">изменить</button></td><td>${money(x.server)}</td></tr>
-   <tr class="tot"><td>Итого</td><td>${money(x.spend)}</td></tr>
-   ${x.leads?`<tr><td>Цена контакта</td><td>${money(x.per_lead)}</td></tr>`:""}</table>
-   <p class="mut" style="margin:6px 0 0">Сервер — доля от суммы в месяц (Railway). ИИ и голос считаются по факту.</p></div>
-  ${x.daily.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>
-   <div class="axis"><span>${x.daily[0].d.slice(5)}</span><span><span class="dot" style="background:var(--tg)"></span>Telegram <span class="dot" style="background:var(--ig);margin-left:6px"></span>Instagram</span><span>${x.daily[x.daily.length-1].d.slice(5)}</span></div></div>`:""}
-  <div class="card"><h3>По дням недели</h3>${wk}</div>`}).join("");
+ const CA="#7b3fe4",CV="#e69a28",CS="#0f9d8f";
+ const all=A.items.reduce((s,x)=>({spend:s.spend+x.spend,ai:s.ai+x.ai,tts:s.tts+x.tts_usd,srv:s.srv+x.server,d:s.d+x.dialogs,l:s.l+x.leads}),{spend:0,ai:0,tts:0,srv:0,d:0,l:0});
+ const head=A.items.length>1?`<div class="hero cost"><h2>Все ИИ-клиенты</h2><div class="sub">${A.periods.find(p=>p[0]==A.period)[1]} · ${A.items.length} клиентов</div>
+  <div class="big"><div><b>${money(all.spend)}</b><span>расходы всего</span></div><div><b>${all.d}</b><span>диалогов</span></div><div><b>${all.l}</b><span>контактов</span></div></div></div>`:"";
+ return chipsA+head+A.items.map(x=>{
+  const mx=Math.max(1,...x.daily.map(y=>y.tg+y.ig)),mw=Math.max(1,...x.weekday),srvDay=x.server_m/30;
+  const mc=Math.max(0.0001,...x.daily.map(y=>y.cost+srvDay));
+  const bars=x.daily.map(y=>`<div title="${y.d}: Telegram ${y.tg}, Instagram ${y.ig}"><i style="height:${90*y.tg/mx}px;background:var(--tg);border-radius:0 0 3px 3px"></i><i style="height:${90*y.ig/mx}px;background:var(--ig);border-radius:3px 3px 0 0"></i></div>`).join("");
+  const cbars=x.daily.map(y=>`<div title="${y.d}: ИИ+голос ${money(y.cost,3)} + сервер ${money(srvDay,2)}"><i style="height:${90*srvDay/mc}px;background:${CS}"></i><i style="height:${90*y.cost/mc}px;background:${CA};border-radius:3px 3px 0 0"></i></div>`).join("");
+  const axis=x.daily.length?`<div class="axis"><span>${x.daily[0].d.slice(8)}.${x.daily[0].d.slice(5,7)}</span><span>${x.daily[x.daily.length-1].d.slice(8)}.${x.daily[x.daily.length-1].d.slice(5,7)}</span></div>`:"";
+  const sp=Math.max(0.0001,x.spend),perDay=x.spend/Math.max(1,x.days);
+  const share=(v,c,n,extra)=>`<div class="cline"><span class="sw" style="background:${c}"></span>${n}${extra?` <span class="mut">${extra}</span>`:""}<b>${money(v,v<1?3:2)} <span class="mut">${Math.round(100*v/sp)}%</span></b></div>`;
+  const tgD=x.tg,igD=x.ig_dialogs,tot=Math.max(1,tgD+igD),deg=360*tgD/tot;
+  return `<div class="hero cost"><h2>${esc(x.company)}</h2>
+  <div class="sub">${x.own_bot?"Свой бот в Telegram":"Через AI Business"}${x.ig?" · Instagram подключён":""} · данные с ${esc(x.since)} · ${x.days} дн.</div>
+  <div class="big"><div><b>${money(x.spend)}</b><span>расходы за период</span></div><div><b>${money(perDay*30,0)}</b><span>прогноз в месяц</span></div><div><b>${x.dialogs?money(x.per_dialog,3):"—"}</b><span>цена диалога</span></div></div></div>
+  <div class="kpis g4">
+   <div class="kc" style="--c:var(--tg)"><span class="ic">💬</span><b>${x.dialogs}</b><span>диалогов</span></div>
+   <div class="kc" style="--c:#2e9e5b"><span class="ic">📞</span><b>${x.leads}</b><span>контактов · ${pct(x.leads,x.dialogs)}</span></div>
+   <div class="kc" style="--c:#e0582f"><span class="ic">🎯</span><b>${x.leads?money(x.per_lead):"—"}</b><span>цена контакта</span></div>
+   <div class="kc" style="--c:${CA}"><span class="ic">📆</span><b>${money(perDay,2)}</b><span>в среднем в день</span></div></div>
+  <div class="card"><h3>💸 Из чего расходы</h3>
+   <div class="stack" style="height:18px"><i style="width:${100*x.ai/sp}%;background:${CA}"></i><i style="width:${100*x.tts_usd/sp}%;background:${CV}"></i><i style="width:${100*x.server/sp}%;background:${CS}"></i></div>
+   ${share(x.ai,CA,"ИИ (Claude)","ответы бота")}
+   ${share(x.tts_usd,CV,"Голос ElevenLabs",x.tts_chars.toLocaleString("ru")+" кред."+(x.stt_min?" · распознано "+x.stt_min+" мин":""))}
+   ${share(x.server,CS,"Сервер Railway",money(x.server_m,0)+"/мес")}
+   <div class="cline" style="border-top:1px solid var(--bg2);padding-top:8px;margin-top:8px"><b style="margin-left:0">Итого</b><b>${money(x.spend)}</b></div>
+   <div class="btns"><button class="lost" data-aicsrv="${esc(x.slug)}" data-v="${x.server_m}">✏️ Сумма сервера в месяц</button></div>
+   <p class="mut" style="margin:6px 0 0">ИИ и голос — по факту использования. Сервер — доля месячной суммы за дни периода.</p></div>
+  ${x.daily.length>1?`<div class="card"><h3>Расходы по дням</h3><div class="chart">${cbars}</div>${axis}
+   <div class="leg" style="display:flex;gap:14px"><div><span class="dot" style="background:${CA}"></span>ИИ + голос</div><div><span class="dot" style="background:${CS}"></span>Сервер</div></div></div>`:""}
+  <div class="card"><h3>Диалоги по платформам</h3><div class="split">
+   <div class="donut" style="background:conic-gradient(var(--tg) 0 ${deg}deg,var(--ig) ${deg}deg 360deg${tgD+igD?"":",var(--bg2) 0 360deg"})"><div><b>${tgD+igD}</b>диалогов</div></div>
+   <div class="leg" style="flex:1"><div><span class="dot" style="background:var(--tg)"></span>Telegram<b>${tgD}</b></div><div><span class="dot" style="background:var(--ig)"></span>Instagram<b>${igD}</b></div>
+   <div class="mut" style="font-size:12px">На 1 диалог: ИИ ${x.dialogs?money(x.ai/x.dialogs,4):"—"} · голос ${x.dialogs?money(x.tts_usd/x.dialogs,4):"—"}</div></div></div></div>
+  ${x.daily.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>${axis}</div>`:""}
+  <div class="card"><h3>📅 По дням недели</h3>${W.map((n,i)=>`<div class="tagb"><span class="n" style="width:30px">${n}</span><span class="t"><i style="width:${100*x.weekday[i]/mw}%;background:linear-gradient(90deg,#2a7de1,#7b3fe4)"></i></span><b>${x.weekday[i]}</b></div>`).join("")}</div>`}).join("");
 }
 async function loadAic(){
  if(st.aicBusy)return;st.aicBusy=true;
@@ -1316,28 +1452,65 @@ function ov(d){
  ${d.business.length?`<div class="card"><h3>Кто пишет (бизнес)</h3><table>${d.business.map(([b,n])=>`<tr><td>${esc(b)}</td><td>${n}</td></tr>`).join("")}</table></div>`:""}`;
 }
 function eov(d){
- const t=d.totals,f=d.funnel,p=d.proc,days=d.daily,mx=Math.max(1,...days.map(x=>x.tg+x.ig)),mxl=Math.max(1,...days.map(x=>x.leads));
- const bars=days.map(x=>`<div title="${x.d}: ${x.tg+x.ig}"><i style="height:${90*x.tg/mx}px;background:var(--tg)"></i><i style="height:${90*x.ig/mx}px;background:var(--ig)"></i></div>`).join("");
- const lbars=days.map(x=>`<div title="${x.d}: ${x.leads}"><i style="height:${90*x.leads/mxl}px;background:var(--ok)"></i></div>`).join("");
- const steps=d.funnel_steps,top=Math.max(1,f.tg.wrote+f.ig.wrote);
- const frows=steps.map(([k,n],i)=>{const a=f.tg[k],b=f.ig[k],s=a+b,prev=i?f.tg[steps[i-1][0]]+f.ig[steps[i-1][0]]:s;
-  return `<div class="fn"><div class="l"><span>${n}</span><span><b>${s}</b> <span class="mut">${i?pct(s,prev)+" от пред.":""}</span></span></div>
-  <div class="bar"><i style="width:${100*a/top}%;background:var(--tg)"></i><i style="width:${100*b/top}%;background:var(--ig)"></i></div></div>`}).join("");
- const per=c=>{const x=p[c];return [x.dialogs,f[c].hot,f[c].lead,pct(f[c].lead,x.dialogs),x.dialogs?(x.client_msgs/x.dialogs).toFixed(1):"—"]};
- const axis=`<div class="axis"><span>${days.length?days[0].d.slice(5):""}</span><span><span class="dot" style="background:var(--tg)"></span>Telegram <span class="dot" style="background:var(--ig);margin-left:6px"></span>Instagram</span><span>${days.length?days[days.length-1].d.slice(5):""}</span></div>`;
- return `${d.company?`<h3 style="margin:4px 4px 8px">${esc(d.company)}</h3>`:""}<div class="kpis">
-  <div class="kpi"><b>${t.dialogs}</b><span>новых диалогов</span></div>
-  <div class="kpi"><b>${t.leads}</b><span>оставили контакт</span></div>
-  <div class="kpi"><b>${pct(t.leads,t.dialogs)}</b><span>конверсия в заявку</span></div>
-  <div class="kpi"><b>${t.hot}</b><span>горячих</span></div>
-  <div class="kpi"><b>${t.won}</b><span>записались</span></div>
-  <div class="kpi"><b>${d.calls.filter(x=>x.todo).length}</b><span>ждут звонка</span></div></div>
- <div class="card"><h3>Каналы</h3><table><tr><th></th><th>диалоги</th><th>горячие</th><th>контакты</th><th>конверсия</th><th>сообщ./диалог</th></tr>
-  ${chRow("Telegram",COL.tg,per("tg"))}${chRow("Instagram",COL.ig,per("ig"))}</table></div>
- ${days.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>${axis}</div>
- <div class="card"><h3>Заявки по дням</h3><div class="chart">${lbars}</div></div>`:""}
- <div class="card"><h3>Воронка</h3><p class="mut">Диалоги, начатые за выбранный период.</p>${frows}</div>
- ${d.needs.length?`<div class="card"><h3>Что чаще всего хотят</h3><table>${d.needs.map(([n,c])=>`<tr><td>${esc(n)}</td><td>${c}</td></tr>`).join("")}</table></div>`:""}`;
+ const t=d.totals,f=d.funnel,p=d.proc,days=d.daily,I=d.ins||{},pr=I.prev||{},per=d.period;
+ const dl=(a,b)=>{if(b===undefined||(!a&&!b))return"";const x=a-b;return x>0?`<span class="dl up">▲${x}</span>`:x<0?`<span class="dl dn">▼${-x}</span>`:`<span class="dl">=</span>`};
+ const waiting=d.calls.filter(x=>x.todo);
+ const tgD=p.tg.dialogs,igD=p.ig.dialogs,tot=Math.max(1,tgD+igD),deg=360*tgD/tot;
+ const conv=t.dialogs?Math.round(100*t.leads/t.dialogs):0;
+ const PL={today:"сегодня","7d":"за 7 дней",month:"за месяц","30d":"за 30 дней"}[per]||"";
+ const mx=Math.max(1,...days.map(x=>x.tg+x.ig)),mxl=Math.max(1,...days.map(x=>x.leads));
+ const bars=days.map(x=>`<div title="${x.d}: Telegram ${x.tg}, Instagram ${x.ig}"><i style="height:${90*x.tg/mx}px;background:var(--tg);border-radius:0 0 3px 3px"></i><i style="height:${90*x.ig/mx}px;background:var(--ig);border-radius:3px 3px 0 0"></i></div>`).join("");
+ const lbars=days.map(x=>`<div title="${x.d}: ${x.leads} заявок"><i style="height:${90*x.leads/mxl}px;background:linear-gradient(#34c77b,#2e9e5b);border-radius:3px"></i></div>`).join("");
+ const axis=days.length?`<div class="axis"><span>${days[0].d.slice(8)}.${days[0].d.slice(5,7)}</span><span>${days[days.length-1].d.slice(8)}.${days[days.length-1].d.slice(5,7)}</span></div>`:"";
+ const steps=d.funnel_steps,top=Math.max(1,f.tg.wrote+f.ig.wrote),FC=["#2a7de1","#3b8ff0","#7b3fe4","#e69a28","#e0582f","#2e9e5b"];
+ const frows=steps.map(([k,n],i)=>{const s=f.tg[k]+f.ig[k],prev=i?f.tg[steps[i-1][0]]+f.ig[steps[i-1][0]]:s,w=Math.max(s?8:0,100*s/top);
+  return `<div class="fnl"><div class="l"><span>${n}</span><span class="mut">${i&&prev?pct(s,prev)+" от пред. этапа":""}</span></div>
+  <div class="t"><i style="width:${w}%;background:${FC[i%FC.length]}">${s}</i></div></div>`}).join("");
+ const H=I.hours||[],mh=Math.max(1,...H);
+ const hrs=H.map((v,i)=>`<i title="${String(i).padStart(2,"0")}:00 — ${v}" style="background:rgba(42,125,225,${v?0.15+0.85*v/mh:0.06})"></i>`).join("");
+ const W=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"],wk=I.week||[],mw=Math.max(1,...wk);
+ const tag=(L,cols)=>{const m=Math.max(1,...L.map(x=>x[1]));return L.map(([n,v],i)=>`<div class="tagb"><span class="n">${esc(n)}</span><span class="t"><i style="width:${100*v/m}%;background:${cols[i%cols.length]}"></i></span><b>${v}</b></div>`).join("")};
+ const C1=["#7b3fe4","#2a7de1","#e69a28","#2e9e5b","#d6337a"],C2=["#0f9d8f","#2a9fd8","#e0582f","#9b59b6"];
+ const lg=I.lang||{},ln=Math.max(1,(lg.uz_lat||0)+(lg.uz_cyr||0)+(lg.ru||0));
+ const kc=(c,ic,v,l,x)=>`<div class="kc" style="--c:${c}"><span class="ic">${ic}</span><b>${v}${x||""}</b><span>${l}</span></div>`;
+ return `<div class="hero"><h2>${esc(d.company||"Отчёт")}</h2><div class="sub">Аналитика ${PL}${d.prev_label?" · ▲▼ — сравнение с "+d.prev_label:""}</div>
+  <div class="big"><div><b>${t.dialogs}</b><span>новых диалогов</span></div><div><b>${t.leads}</b><span>оставили номер</span></div><div><b>${conv}%</b><span>конверсия</span></div></div></div>
+ <div class="kpis g4">
+  ${kc("#2a7de1","💬",t.dialogs,"новых диалогов",dl(t.dialogs,pr.dialogs))}
+  ${kc("#2e9e5b","📞",t.leads,"оставили номер",dl(t.leads,pr.leads))}
+  ${kc("#e0582f","🔥",t.hot,"горячих",dl(t.hot,pr.hot))}
+  ${kc("#7b3fe4","✅",t.won,"записались")}
+  ${kc("#e69a28","⏳",waiting.length,"ждут звонка")}
+  ${kc("#d6337a","🎙",I.voice||0,"голосовых от клиентов")}</div>
+ <div class="card"><h3>Откуда пишут</h3><div class="split">
+  <div class="donut" style="background:conic-gradient(var(--tg) 0 ${deg}deg,var(--ig) ${deg}deg 360deg${tgD+igD?"":",var(--bg2) 0 360deg"})"><div><b>${tgD+igD}</b>диалогов</div></div>
+  <div class="leg" style="flex:1">
+   <div><span class="dot" style="background:var(--tg)"></span>Telegram<b>${tgD} · ${pct(tgD,tgD+igD)}</b></div>
+   <div><span class="dot" style="background:var(--ig)"></span>Instagram<b>${igD} · ${pct(igD,tgD+igD)}</b></div>
+   <div class="mut" style="font-size:12px">Номер оставили: Telegram ${f.tg.lead} (${pct(f.tg.lead,tgD)}) · Instagram ${f.ig.lead} (${pct(f.ig.lead,igD)})</div></div></div></div>
+ ${days.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>${axis}
+  <div class="leg" style="display:flex;gap:14px"><div><span class="dot" style="background:var(--tg)"></span>Telegram</div><div><span class="dot" style="background:var(--ig)"></span>Instagram</div></div></div>
+ <div class="card"><h3>Заявки (оставили номер) по дням</h3><div class="chart">${lbars}</div>${axis}</div>`:""}
+ <div class="card"><h3>Воронка</h3><p class="mut" style="margin:0 0 4px">Путь клиента от первого сообщения до записи.</p>${frows}</div>
+ ${waiting.length?`<div class="card"><h3>⏳ Ждут звонка <span class="cnt">${waiting.length}</span></h3>${waiting.slice(0,6).map(x=>`<div class="wl"><div><b>${esc(x.who)}</b> <span class="pill" style="background:${x.ch=="ig"?"var(--ig)":"var(--tg)"}">${x.ch=="ig"?"Instagram":"Telegram"}</span><div class="mut">${esc((x.want||"").slice(0,70))}</div></div>${x.tel&&!x.ro?`<a class="tel" href="tel:${esc(x.tel)}">📞</a>`:""}</div>`).join("")}
+  ${waiting.length>6?`<p class="mut" style="margin:6px 0 0">Ещё ${waiting.length-6} — во вкладке «Звонки»</p>`:""}</div>`:""}
+ <div class="g2 g-wrap" style="display:grid;gap:8px">
+ ${(I.courses||[]).some(x=>x[1])?`<div class="card" style="margin:0"><h3>🎯 Какие курсы спрашивают</h3>${tag(I.courses.filter(x=>x[1]),C1)}</div>`:""}
+ ${(I.branches||[]).some(x=>x[1])?`<div class="card" style="margin:0"><h3>📍 Какие филиалы</h3>${tag(I.branches.filter(x=>x[1]),C2)}</div>`:""}</div>
+ <div class="card"><h3>⏰ Когда пишут клиенты</h3><div class="hrs">${hrs}</div><div class="hax"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+  ${I.peak!=null&&I.peak!==undefined?`<p class="mut" style="margin:6px 0 0">Пик — ${String(I.peak).padStart(2,"0")}:00–${String((I.peak+1)%24).padStart(2,"0")}:00. Бот отвечает круглосуточно.</p>`:""}</div>
+ <div class="card"><h3>📅 По дням недели</h3>${W.map((n,i)=>`<div class="tagb"><span class="n" style="width:30px">${n}</span><span class="t"><i style="width:${100*(wk[i]||0)/mw}%;background:linear-gradient(90deg,#2a7de1,#7b3fe4)"></i></span><b>${wk[i]||0}</b></div>`).join("")}</div>
+ <div class="card"><h3>🗣 Язык клиентов</h3><div class="stack"><i style="width:${100*(lg.uz_lat||0)/ln}%;background:#2e9e5b"></i><i style="width:${100*(lg.uz_cyr||0)/ln}%;background:#0f9d8f"></i><i style="width:${100*(lg.ru||0)/ln}%;background:#2a7de1"></i></div>
+  <div class="cline"><span class="sw" style="background:#2e9e5b"></span>Узбекский (латиница)<b>${lg.uz_lat||0}</b></div>
+  <div class="cline"><span class="sw" style="background:#0f9d8f"></span>Узбекский (кириллица)<b>${lg.uz_cyr||0}</b></div>
+  <div class="cline"><span class="sw" style="background:#2a7de1"></span>Русский<b>${lg.ru||0}</b></div></div>
+ <div class="card"><h3>📈 Качество диалогов</h3><table>
+  <tr><th></th><th>Telegram</th><th>Instagram</th></tr>
+  <tr><td>Сообщений клиента на диалог</td><td>${tgD?(p.tg.client_msgs/tgD).toFixed(1):"—"}</td><td>${igD?(p.ig.client_msgs/igD).toFixed(1):"—"}</td></tr>
+  <tr><td>Вовлеклись (3+ сообщений)</td><td>${pct(p.tg.engaged,tgD)}</td><td>${pct(p.ig.engaged,igD)}</td></tr>
+  <tr><td>Вернулись после напоминания</td><td>${p.tg.revived}</td><td>${p.ig.revived}</td></tr>
+  <tr><td>Передано менеджеру</td><td>${p.tg.handoff}</td><td>${p.ig.handoff}</td></tr></table></div>
+ ${d.needs.length?`<div class="card"><h3>💡 Что хотят клиенты</h3>${tag(d.needs.slice(0,8),C1)}</div>`:""}`;
 }
 function fn(d){
  const steps=d.funnel_steps,f=d.funnel,top=Math.max(1,f.tg.wrote+f.ig.wrote);
