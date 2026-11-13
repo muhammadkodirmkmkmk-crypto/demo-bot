@@ -945,6 +945,21 @@ def crm_hook(slug):
         return ""
 
 
+def crm_check(url):
+    """Ssylka ishlaydimi: True yoki xato matni"""
+    m = re.search(r"key=([A-Za-z0-9_-]{8,})", url)
+    if not m:
+        return "в ссылке нет ключа после key="
+    try:
+        u = url.replace("/api/hook?", "/api/hook/stats?")
+        with urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "aib-bot"}), timeout=8) as r:
+            return True if r.status == 200 else f"ответ {r.status}"
+    except urllib.error.HTTPError as e:
+        return "ключ неверный или устарел" if e.code in (401, 403) else f"ошибка {e.code}"
+    except Exception as e:
+        return "CRM недоступна (" + str(e)[:60] + ")"
+
+
 def crm_stats(slug, period):
     """CRM'dagi lidlarni qayta ishlash tahlili (tezlik, dozvon, yozilish) — panel uchun, 60 s kesh"""
     key = (slug, period)
@@ -1051,6 +1066,9 @@ def command(chat_id, text):
             core.send_msg(chat_id, "CRM для " + parts[1] + " отключена.")
         elif not parts[2].startswith("https://") or "/api/hook" not in parts[2] or "key=" not in parts[2]:
             core.send_msg(chat_id, "Это не похоже на ссылку из CRM. Нужна ссылка вида https://…/api/hook?key=…")
+        elif crm_check(parts[2]) is not True:
+            core.send_msg(chat_id, "❌ CRM не приняла эту ссылку: " + str(crm_check(parts[2])) + ".\n"
+                                   "В CRM → «Доступы» → «Создать ключ» → кнопка «Скопировать» и вставьте сюда целиком (ключ после key= обязателен).")
         else:
             core.db_put("crmhook:" + parts[1], {"url": parts[2], "set": time.time()})
             CRMSTATS.clear()
