@@ -960,6 +960,50 @@ def crm_check(url):
         return "CRM недоступна (" + str(e)[:60] + ")"
 
 
+CRM_URL_RE = re.compile(r"^https://lead-crm-[a-z0-9-]+\.up\.railway\.app/api/hook\?key=[A-Za-z0-9_-]{8,}$")
+
+
+def crm_cors(h, code, obj):
+    b = json.dumps(obj, ensure_ascii=False).encode()
+    h.send_response(code)
+    origin = h.headers.get("Origin") or ""
+    if re.match(r"^https://lead-crm-[a-z0-9-]+\.up\.railway\.app$", origin):
+        h.send_header("Access-Control-Allow-Origin", origin)
+        h.send_header("Access-Control-Allow-Headers", "Content-Type")
+        h.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+    h.send_header("Content-Type", "application/json")
+    h.send_header("Content-Length", str(len(b)))
+    h.end_headers()
+    h.wfile.write(b)
+
+
+def crm_register(h, body):
+    """Faqat bizning CRM domenidagi va CRM o'zi tasdiqlagan kalit qabul qilinadi"""
+    try:
+        d = json.loads(body or b"{}")
+        slug, url = str(d.get("slug") or ""), str(d.get("url") or "")
+    except Exception:
+        return crm_cors(h, 400, {"error": "bad json"}) or True
+    if slug not in core.AGENTS.agents() or not CRM_URL_RE.match(url):
+        return crm_cors(h, 400, {"error": "bad slug or url"}) or True
+    chk = crm_check(url)
+    if chk is not True:
+        return crm_cors(h, 400, {"error": str(chk)}) or True
+    core.db_put("crmhook:" + slug, {"url": url, "set": time.time()})
+    CRMSTATS.clear()
+    for cid in report_chats_for_crm():
+        try:
+            core.send_msg(cid, f"✅ CRM подключена к агенту {core.AGENTS.name(slug)} (из CRM, кнопкой). Заявки начнут приходить в течение минуты.")
+        except Exception:
+            pass
+    crm_cors(h, 200, {"ok": True})
+    return True
+
+
+def report_chats_for_crm():
+    return [x for x in {str(core.REPORT_CHAT_ID or "")} if x]
+
+
 def crm_stats(slug, period):
     """CRM'dagi lidlarni qayta ishlash tahlili (tezlik, dozvon, yozilish) — panel uchun, 60 s kesh"""
     key = (slug, period)
@@ -1073,7 +1117,7 @@ def command(chat_id, text):
             core.db_put("crmhook:" + parts[1], {"url": parts[2], "set": time.time()})
             CRMSTATS.clear()
             core.send_msg(chat_id, f"✅ CRM подключена к агенту {core.AGENTS.name(parts[1])}. "
-                                   "Заявки (оставили номер) за последние 60 дней и все новые будут приходить туда в течение минуты.\n"
+                                   "Все заявки с номером (и старые, и новые) будут приходить туда в течение минуты.\n"
                                    "Удалите сообщение со ссылкой из этого чата — в ней ключ.")
     elif cmd == "/stats":
         core.send_msg(chat_id, text_summary("today"))
@@ -1215,6 +1259,8 @@ def handle_get(h):
 
 def handle_post(h, body):
     path = urllib.parse.urlparse(h.path).path.rstrip("/")
+    if path == "/crm/register":                  # CRM «Доступы» → botni bir tugma bilan ulash (nusxa ko'chirishsiz)
+        return crm_register(h, body)
     if path in ("/crm/code", "/crm/verify", "/crm/pass"):
         return core.CRMWEB.handle_post(h, body)
     if path not in ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/export",

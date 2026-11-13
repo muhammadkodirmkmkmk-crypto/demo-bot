@@ -1775,7 +1775,7 @@ def crm_sync():
     with LOCK:
         items = []
         for k, c in STATE["chats"].items():
-            if not c.get("lead_sent") or c.get("crm_sent"):
+            if c.get("crm_sent") or not (c.get("lead_sent") or (c.get("facts") or {}).get("phone")):
                 continue
             ch = chat_channel(c)
             if AGENT_MODE:
@@ -1783,10 +1783,11 @@ def crm_sync():
             else:
                 slug = ch[6:] if ch.startswith("agent:") and c.get("channel") == "ig" else None
             first = ADMIN.chat_first_ts(c)
-            if slug and first and now - first < 60 * 86400:
+            if slug and first:
                 items.append((k, slug, json.loads(json.dumps(c))))
     hooks = {}
-    for k, slug, c in items[:40]:
+    items.sort(key=lambda x: ADMIN.chat_first_ts(x[2]) or 0)
+    for k, slug, c in items[:150]:
         if slug not in hooks:
             hooks[slug] = ADMIN.crm_hook(slug)
         url = hooks[slug]
@@ -2018,6 +2019,13 @@ class Handler(BaseHTTPRequestHandler):
             handle(update)
         except Exception as e:
             print("Error:", e)
+
+    def do_OPTIONS(self):
+        if self.path.split("?")[0].rstrip("/") == "/crm/register":
+            ADMIN.crm_cors(self, 200, {})
+            return
+        self.send_response(404)
+        self.end_headers()
 
     def do_GET(self):
         if IG.handle_get(self) or ADMIN.handle_get(self):
