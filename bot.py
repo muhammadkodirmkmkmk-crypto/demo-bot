@@ -1742,6 +1742,62 @@ def agent_stats():
     return {"days": days, "updated": time.time()}
 
 
+def crm_sync():
+    """Lid (raqam qoldirgan) — mijozning CRM'iga (lead-crm). Agent bo'yicha havola /crm_hook bilan beriladi.
+    Alohida botda: barcha Telegram lidlari; asosiy botda: agentlarning Instagram lidlari. Yuborilgan — crm_sent."""
+    now = time.time()
+    with LOCK:
+        items = []
+        for k, c in STATE["chats"].items():
+            if not c.get("lead_sent") or c.get("crm_sent"):
+                continue
+            ch = chat_channel(c)
+            if AGENT_MODE:
+                slug = AGENT_MODE if ch in ("tg", "ig") else None
+            else:
+                slug = ch[6:] if ch.startswith("agent:") and c.get("channel") == "ig" else None
+            first = ADMIN.chat_first_ts(c)
+            if slug and first and now - first < 60 * 86400:
+                items.append((k, slug, json.loads(json.dumps(c))))
+    hooks = {}
+    for k, slug, c in items[:40]:
+        if slug not in hooks:
+            hooks[slug] = ADMIN.crm_hook(slug)
+        url = hooks[slug]
+        if not url:
+            continue
+        f = c.get("facts") or {}
+        want = (f.get("offer") or f.get("need") or "").strip()
+        first = ADMIN.chat_first_ts(c)
+        extra = {"Что хочет": want[:300], "Готовность": f"{c.get('readiness', 0)}%"}
+        if c.get("username"):
+            extra["Ник"] = "@" + c["username"]
+        link = ADMIN.chat_link(c)
+        if link:
+            extra["Чат"] = link
+        last = [h["t"] for h in c.get("history", []) if h["r"] == "u"][-3:]
+        if last:
+            extra["Последние сообщения"] = " · ".join(t[:120] for t in last)
+        body = {"lead_id": "bot:" + slug + ":" + k, "name": c.get("name") or f.get("name") or "Клиент",
+                "phone": f.get("phone") or "", "business_type": want[:60] or None,
+                "source": "Instagram" if c.get("channel") == "ig" else "Telegram бот",
+                "created_time": datetime.fromtimestamp(first, TZ).isoformat() if first else None, "extra": extra}
+        try:
+            req = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(),
+                                         headers={"Content-Type": "application/json", "User-Agent": "aib-bot"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                ok = json.loads(r.read().decode()).get("ok")
+        except Exception as e:
+            print("CRM push error:", slug, e)
+            continue
+        if ok:
+            with LOCK:
+                cc = STATE["chats"].get(k)
+                if cc is not None:
+                    cc["crm_sent"] = time.time()
+            save_chat(k)
+
+
 def scheduler():
     last_maint = 0
     while True:
@@ -1751,6 +1807,10 @@ def scheduler():
                 last_maint = now
                 IG.maintenance()
             BOSS.maybe_digest()
+            try:
+                crm_sync()
+            except Exception as e:
+                print("CRM sync error:", e)
             with LOCK:
                 keys = [k for k, c in STATE["chats"].items() if due_followup(c, now)]
             for k in keys:

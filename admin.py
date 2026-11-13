@@ -239,6 +239,7 @@ def staff_view(d):
             "totals": {"dialogs": d["totals"]["dialogs"], "leads": d["totals"]["leads"], "won": d["totals"]["won"],
                        "hot": sum(f[c]["hot"] for c in f)},
             "needs": sorted(needs.items(), key=lambda x: -x[1])[:10], "ins": staff_insights(d["period"]),
+            "crm": crm_stats(core.AGENT_MODE, d["period"]) if core.AGENT_MODE else None,
             "prev_label": {"today": "вчера", "yesterday": "позавчера"}.get(d["period"], "предыдущим таким же периодом"),
             "period_label": period_label(d["period"])}
 
@@ -926,6 +927,46 @@ def text_staff_digest():
     return "\n".join(lines)
 
 
+CRMSTATS = {}
+
+
+def crm_hook(slug):
+    """Mijoz agentining CRM havolasi (asosiy bot jadvalida). Alohida botda ham o'qiladi."""
+    try:
+        if core.AGENT_MODE and MAIN_DB_TABLE and MAIN_DB_TABLE != core.DB_TABLE:
+            if core.db_connect() is None:
+                return ""
+            with core.DB_LOCK:
+                rows = core.DB.run("SELECT v FROM " + MAIN_DB_TABLE + " WHERE k = :k", k="crmhook:" + slug)
+            return ((json.loads(rows[0][0]) if rows else {}) or {}).get("url") or ""
+        return (core.db_get("crmhook:" + slug) or {}).get("url") or ""
+    except Exception as e:
+        print("CRM hook read error:", e)
+        return ""
+
+
+def crm_stats(slug, period):
+    """CRM'dagi lidlarni qayta ishlash tahlili (tezlik, dozvon, yozilish) — panel uchun, 60 s kesh"""
+    key = (slug, period)
+    hit = CRMSTATS.get(key)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    url = crm_hook(slug)
+    out = None
+    if url:
+        try:
+            p, start, days = period_range(period)
+            frm = datetime.fromtimestamp(start, core.TZ).isoformat()
+            to = datetime.fromtimestamp(period_end(days), core.TZ).isoformat()
+            u = url.replace("/api/hook?", "/api/hook/stats?") + "&" + urllib.parse.urlencode({"from": frm, "to": to})
+            with urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "aib-bot"}), timeout=6) as r:
+                out = json.loads(r.read().decode())
+        except Exception as e:
+            print("CRM stats error:", e)
+    CRMSTATS[key] = (time.time(), out)
+    return out
+
+
 def text_leads():
     d = build("30d")
     top = [x for x in d["leads"] if x["lvl"] >= 4][:10]
@@ -999,6 +1040,23 @@ def command(chat_id, text):
             core.send_msg(chat_id, "Пароль слишком короткий — минимум 4 символа.")
     elif cmd in ("/agents", "/agent_owner", "/agent_report", "/agent_ig"):
         core.send_msg(chat_id, core.AGENTS.admin_command(text))
+    elif cmd == "/crm_hook":
+        parts = text.split()
+        if len(parts) < 3 or parts[1] not in core.AGENTS.agents():
+            core.send_msg(chat_id, "Формат: /crm_hook <код агента> <ссылка из CRM → Доступы → Ключ для бота> (или off). "
+                                   "Агенты: " + ", ".join(core.AGENTS.agents()))
+        elif parts[2].lower() == "off":
+            core.db_put("crmhook:" + parts[1], {"url": ""})
+            CRMSTATS.clear()
+            core.send_msg(chat_id, "CRM для " + parts[1] + " отключена.")
+        elif not parts[2].startswith("https://") or "/api/hook" not in parts[2] or "key=" not in parts[2]:
+            core.send_msg(chat_id, "Это не похоже на ссылку из CRM. Нужна ссылка вида https://…/api/hook?key=…")
+        else:
+            core.db_put("crmhook:" + parts[1], {"url": parts[2], "set": time.time()})
+            CRMSTATS.clear()
+            core.send_msg(chat_id, f"✅ CRM подключена к агенту {core.AGENTS.name(parts[1])}. "
+                                   "Заявки (оставили номер) за последние 60 дней и все новые будут приходить туда в течение минуты.\n"
+                                   "Удалите сообщение со ссылкой из этого чата — в ней ключ.")
     elif cmd == "/stats":
         core.send_msg(chat_id, text_summary("today"))
     elif cmd == "/month":
@@ -1091,7 +1149,7 @@ def ai_clients(period="month"):
         wk = [0] * 7
         for d, v in sel.items():
             wk[datetime.strptime(d, "%Y-%m-%d").weekday()] += v["tg"] + v["ig"]
-        out.append({"slug": slug, "company": a.get("company") or slug, "own_bot": bool(a.get("own_bot")),
+        out.append({"slug": slug, "company": a.get("company") or slug, "crm": crm_stats(slug, period) if period != "all" else crm_stats(slug, "year"), "own_bot": bool(a.get("own_bot")),
                     "ig": bool(a.get("ig_tenant")), "since": first_day, "days": n_days,
                     "dialogs": dialogs, "tg": tot["tg"], "ig_dialogs": tot["ig"], "leads": tot["leads"],
                     "ai": round(tot["ai"], 3), "tts_chars": tot["tts"], "tts_usd": round(tts_usd, 3),
@@ -1468,6 +1526,7 @@ function aic(){
    <div class="cline" style="border-top:1px solid var(--bg2);padding-top:8px;margin-top:8px"><b style="margin-left:0">Итого</b><b>${money(x.spend)}</b></div>
    <div class="btns"><button class="lost" data-aicsrv="${esc(x.slug)}" data-v="${x.server_m}">✏️ Сумма сервера в месяц</button></div>
    <p class="mut" style="margin:6px 0 0">ИИ и голос — по факту использования. Сервер — доля месячной суммы за дни периода.</p></div>
+  ${crmCard(x.crm,true)}
   ${x.daily.length>1?`<div class="card"><h3>Расходы по дням</h3><div class="chart">${cbars}</div>${axis}
    <div class="leg" style="display:flex;gap:14px"><div><span class="dot" style="background:${CA}"></span>ИИ + голос</div><div><span class="dot" style="background:${CS}"></span>Сервер</div></div></div>`:""}
   <div class="card"><h3>Диалоги по платформам</h3><div class="split">
@@ -1510,6 +1569,26 @@ function ov(d){
    return `<tr><td>${n}</td><td>${L.length}</td><td>${k=="won"?money(L.reduce((s,x)=>s+Number(x.deal.amount||0),0),0):""}</td></tr>`}).join("")}</table></div>
  ${d.business.length?`<div class="card"><h3>Кто пишет (бизнес)</h3><table>${d.business.map(([b,n])=>`<tr><td>${esc(b)}</td><td>${n}</td></tr>`).join("")}</table></div>`:""}`;
 }
+function crmCard(c,admin){
+ if(!c)return admin?`<div class="card"><h3>📞 Обработка заявок (CRM)</h3><p class="mut" style="margin:0">CRM не подключена. В CRM: «Доступы» → «Создать ключ» → отправьте боту команду /crm_hook.</p></div>`:"";
+ const ft=c.first_touch||{},real=Math.max(1,c.real||0),pc=(a,b)=>b?Math.round(100*a/b)+"%":"—";
+ const mm=m=>m==null?"—":m<1?"< 1 мин":m<60?Math.round(m)+" мин":m<1440?(m/60).toFixed(1).replace(".0","")+" ч":(m/1440).toFixed(1).replace(".0","")+" дн";
+ const grade=ft.median_min==null?"":ft.median_min<=15?["#2e9e5b","отлично"]:ft.median_min<=60?["#e69a28","нормально"]:["#e0582f","медленно"];
+ const CC={new:"#2a7de1",no_answer:"#e69a28",contacted:"#7b3fe4",thinking:"#d6337a",meeting:"#0f9d8f",won:"#2e9e5b",lost:"#8a94a6",spam:"#e0582f"};
+ const mx=Math.max(1,...c.pipeline.map(([k])=>c.by_status[k]||0));
+ const kc=(col,ic,v,l)=>`<div class="kc" style="--c:${col}"><span class="ic">${ic}</span><b>${v}</b><span>${l}</span></div>`;
+ return `<div class="card"><h3>📞 Обработка заявок (CRM)</h3><p class="mut" style="margin:0 0 8px">Как менеджеры работают с заявками за период: скорость звонка, дозвон, записи.</p>
+  <div class="kpis g4" style="margin:0">
+   ${kc(grade?grade[0]:"#2a7de1","⚡",mm(ft.median_min),"до первого звонка"+(grade?` · <em style="font-style:normal;font-weight:700;color:${grade[0]}">${grade[1]}</em>`:""))}
+   ${kc("#2e9e5b","⏱",pc(ft.in15,ft.n),"обработаны за 15 мин")}
+   ${kc(c.untouched_1h?"#e0582f":"#8a94a6","🚨",c.untouched_1h,"ждут звонка > 1 часа")}
+   ${kc(c.overdue?"#e69a28":"#8a94a6","⏰",c.overdue,"просрочено перезвонов")}
+   ${kc("#7b3fe4","📲",pc(c.reached,c.real),"дозвонились")}
+   ${kc("#0f9d8f","✅",c.won,"записались · "+pc(c.won,c.real))}</div>
+  <div style="margin-top:10px">${c.pipeline.map(([k,n])=>`<div class="tagb"><span class="n">${esc(n)}</span><span class="t"><i style="width:${100*(c.by_status[k]||0)/mx}%;background:${CC[k]||"#2a7de1"}"></i></span><b>${c.by_status[k]||0}</b></div>`).join("")}</div>
+  ${c.sources&&c.sources.length?`<table style="margin-top:8px"><tr><th>Откуда</th><th>заявок</th><th>дозвон</th><th>записались</th></tr>${c.sources.map(x=>`<tr><td>${esc(x.source)}</td><td>${x.n}</td><td>${pc(x.reached,x.n)}</td><td>${x.won}</td></tr>`).join("")}</table>`:""}
+  ${c.revenue?`<p style="margin:8px 0 0">💰 Сумма оплат: <b>${Number(c.revenue).toLocaleString("ru")}</b></p>`:""}</div>`;
+}
 function eov(d){
  const t=d.totals,f=d.funnel,p=d.proc,days=d.daily,I=d.ins||{},pr=I.prev||{},per=d.period;
  const dl=(a,b)=>{if(b===undefined||(!a&&!b))return"";const x=a-b;return x>0?`<span class="dl up">▲${x}</span>`:x<0?`<span class="dl dn">▼${-x}</span>`:`<span class="dl">=</span>`};
@@ -1551,6 +1630,7 @@ function eov(d){
   <div class="leg" style="display:flex;gap:14px"><div><span class="dot" style="background:var(--tg)"></span>Telegram</div><div><span class="dot" style="background:var(--ig)"></span>Instagram</div></div></div>
  <div class="card"><h3>Заявки (оставили номер) по дням</h3><div class="chart">${lbars}</div>${axis}</div>`:""}
  <div class="card"><h3>Воронка</h3><p class="mut" style="margin:0 0 4px">Путь клиента от первого сообщения до записи.</p>${frows}</div>
+ ${crmCard(d.crm,false)}
  ${waiting.length?`<div class="card"><h3>⏳ Ждут звонка <span class="cnt">${waiting.length}</span></h3>${waiting.slice(0,6).map(x=>`<div class="wl"><div><b>${esc(x.who)}</b> <span class="pill" style="background:${x.ch=="ig"?"var(--ig)":"var(--tg)"}">${x.ch=="ig"?"Instagram":"Telegram"}</span><div class="mut">${esc((x.want||"").slice(0,70))}</div></div>${x.tel&&!x.ro?`<a class="tel" href="tel:${esc(x.tel)}">📞</a>`:""}</div>`).join("")}
   ${waiting.length>6?`<p class="mut" style="margin:6px 0 0">Ещё ${waiting.length-6} — во вкладке «Звонки»</p>`:""}</div>`:""}
  <div class="g2 g-wrap" style="display:grid;gap:8px">
