@@ -930,6 +930,36 @@ def text_staff_digest():
 CRMSTATS = {}
 
 
+PAUSE_DEFAULT = {"express"}      # 2026-11-15: Express agenti egasi so'rovi bilan to'xtatildi (TG + IG). Yoqish: /agent_pause express off
+PAUSE_CACHE = {"t": 0, "v": None}
+
+
+def main_get(k):
+    """Asosiy bot jadvalidan o'qish (alohida Express botida ham)"""
+    if core.AGENT_MODE and MAIN_DB_TABLE and MAIN_DB_TABLE != core.DB_TABLE:
+        if core.db_connect() is None:
+            return None
+        with core.DB_LOCK:
+            rows = core.DB.run("SELECT v FROM " + MAIN_DB_TABLE + " WHERE k = :k", k=k)
+        return json.loads(rows[0][0]) if rows else None
+    return core.db_get(k)
+
+
+def agent_paused(slug):
+    if not slug:
+        return False
+    if time.time() - PAUSE_CACHE["t"] > 30:
+        try:
+            PAUSE_CACHE["v"] = main_get("agent_pause")
+        except Exception as e:
+            print("pause read error:", e)
+        PAUSE_CACHE["t"] = time.time()
+    v = PAUSE_CACHE["v"]
+    if isinstance(v, dict) and slug in v:
+        return bool(v[slug])
+    return slug in PAUSE_DEFAULT
+
+
 def crm_hook(slug):
     """Mijoz agentining CRM havolasi (asosiy bot jadvalida). Alohida botda ham o'qiladi."""
     try:
@@ -1097,6 +1127,18 @@ def command(chat_id, text):
                                    "Удалите сообщение с паролем из этого чата.")
         else:
             core.send_msg(chat_id, "Пароль слишком короткий — минимум 4 символа.")
+    elif cmd == "/agent_pause":
+        parts = text.split()
+        if len(parts) < 3 or parts[1] not in core.AGENTS.agents() or parts[2].lower() not in ("on", "off"):
+            st = ", ".join(f"{s}: {'⏸ на паузе' if agent_paused(s) else '▶️ работает'}" for s in core.AGENTS.agents())
+            core.send_msg(chat_id, "Формат: /agent_pause <агент> on|off (on — остановить, off — включить).\nСейчас: " + st)
+        else:
+            v = core.db_get("agent_pause") or {}
+            v[parts[1]] = parts[2].lower() == "on"
+            core.db_put("agent_pause", v)
+            PAUSE_CACHE["t"] = 0
+            core.send_msg(chat_id, ("⏸ Агент " + core.AGENTS.name(parts[1]) + " остановлен: в Telegram и Instagram не отвечает, сообщения сохраняются.")
+                          if v[parts[1]] else ("▶️ Агент " + core.AGENTS.name(parts[1]) + " снова отвечает клиентам."))
     elif cmd in ("/agents", "/agent_owner", "/agent_report", "/agent_ig"):
         core.send_msg(chat_id, core.AGENTS.admin_command(text))
     elif cmd == "/crm_hook":

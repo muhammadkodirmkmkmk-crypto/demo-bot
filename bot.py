@@ -1583,7 +1583,7 @@ def respond(key, stamp=None):
         c = chat_state(key)
         if stamp is not None and c["last_client"] != stamp:
             return
-        if c["paused_until"] > time.time():
+        if c["paused_until"] > time.time() or agent_paused_chat(c):
             save_chat(key)
             return
         last = c["history"][-1]["t"] if c["history"] else ""
@@ -1650,8 +1650,27 @@ def followup_plan(c):
     return FOLLOWUP_MINUTES
 
 
+def chat_agent_slug(c):
+    if AGENT_MODE:
+        return AGENT_MODE
+    if c.get("agent"):
+        return c["agent"]
+    if c.get("channel") == "ig":
+        return AGENTS.for_ig_tenant(c.get("tenant"))
+    return None
+
+
+def agent_paused_chat(c):
+    """Agent egasi so'rovi bilan to'xtatilgan bo'lsa — javob ham, eslatma ham yo'q"""
+    try:
+        return ADMIN.agent_paused(chat_agent_slug(c))
+    except Exception as e:
+        print("pause check error:", e)
+        return False
+
+
 def due_followup(c, now):
-    if not AI_REPLIES or c["status"] != "active" or not c.get("chat_id"):
+    if not AI_REPLIES or c["status"] != "active" or not c.get("chat_id") or agent_paused_chat(c):
         return False
     plan = followup_plan(c)
     if c["paused_until"] > now or c["followups"] >= len(plan):
