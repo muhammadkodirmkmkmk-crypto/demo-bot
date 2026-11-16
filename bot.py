@@ -1302,8 +1302,9 @@ def generate_reply(c, script, model=None):
         if first and len(out) < 2:
             problems.append("Первый ответ — 3 коротких сообщения: приветствие, как дела, уточнение.")
         if agent and PASSIVE_END.search(" ".join(raw_msgs)) and not CLIENT_DONE.search(last_client_text(c)):
-            problems.append("Не пиши «пишите, если будут вопросы» — клиент не прощался. Коротко ответь и задай следующий вопрос по делу "
-                            "(если ещё не знаешь — учился ли он в автошколе и есть ли сертификат).")
+            problems.append("Не пиши «пишите, если будут вопросы» — клиент не прощался. Коротко ответь и задай следующий вопрос по делу"
+                            + (" (если ещё не знаешь — учился ли он в автошколе и есть ли сертификат)." if chat_agent_slug(c) == "express" else
+                               " по логике продажи из базы."))
         if not out and not problems:
             problems.append("Ответ не распознан. Верни строго один валидный JSON-объект без лишнего текста.")
         wp = wrong_prices(" ".join(raw_msgs))
