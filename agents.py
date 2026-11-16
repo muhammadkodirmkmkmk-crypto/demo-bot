@@ -296,6 +296,36 @@ def promised_show(slug, msgs):
     return []
 
 
+PHOTO_REQ = r"(?i)(rasm|расм|surat|сурат|фото|foto|photo|ko'?rsat|кўрсат|курсат|покаж|как выгляд|qanaqa ekan|katalog|каталог)"
+PHOTO_PROMISE = r"(?i)(rasm\w*\s+(yubor|tashla)|расм\w*\s+(юбор|ташла)|фото\w*\s+(отправ|пришл|скин)|(rasm|расм|фото|foto)\w*\s*:)"
+PHOTO_NONE = r"(?i)(\brom\b|\bromn|\bром|deraza|дераза|окн|okn|plastik|пластик|karusel|карусел|sensor|сенсор)"
+PHOTO_WORDS = [("photo_garaj", r"(?i)garaj|гараж|darvoza|дарвоза|ворот"),
+               ("photo_gilotina", r"(?i)gilo[tу]in|giloyin|гило[тй]ин|гильотин"),
+               ("photo_rolstavni", r"(?i)rolstav|ролстав|рольстав|ролл?ет|жалюз"),
+               ("photo_perila", r"(?i)peril|перил|ograd|ограж"),
+               ("photo_surma", r"(?i)surma|сурма|razdvij|раздвиж|сдвиж|kupe|купе"),
+               ("photo_dush", r"(?i)dush|душ"),
+               ("photo_mdf", r"(?i)\bmdf\b|мдф")]
+
+
+def auto_photo(slug, text, out, recent):
+    """Mijoz rasm so'radi yoki bot «rasm yuboraman» dedi, lekin rasm qo'yilmagan — mahsulotga qarab o'zimiz qo'shamiz.
+    Mahsulot rasmi bo'lmasa (masalan oddiy rom/deraza) — Instagram havolasi (photo_more)."""
+    import re
+    bl = (get(slug) or {}).get("blocks") or {}
+    if not any(k.startswith("photo_") for k in bl):
+        return []
+    if not (re.search(PHOTO_REQ, text or "") or any(re.search(PHOTO_PROMISE, m) for m in out)):
+        return []
+    for i, src in enumerate([text] + list(reversed(recent or [])) + [" ".join(out)]):
+        for key, rx in PHOTO_WORDS:
+            if key in bl and re.search(rx, src or ""):
+                return [key]
+        if i == 0 and re.search(PHOTO_NONE, src or ""):   # hozir so'ralgan mahsulotning rasmi yo'q (rom, deraza...)
+            break
+    return ["photo_more"] if "photo_more" in bl else []
+
+
 def auto_show(slug, text):
     """Mijoz lokatsiya so'rasa — model unutgan bo'lsa ham xarita yuboriladi (aniq filial yoki hammasi)"""
     import re
@@ -383,7 +413,7 @@ ALUPLAST_PROMPT = """Ты — вежливый менеджер компании
 1. Узнай, что нужно: окно/дверь, гаражные ворота, сенсорная дверь, гильотина, перегородка и т.д. Одним вопросом.
 2. Узнай объект (дом, магазин, офис, кафе) и примерные размеры (ширина × высота) и количество — без допроса, по одному вопросу.
 3. Спросили цену — сразу назови диапазон из базы (или "show": "prices" для всего прайса). Если клиент дал размеры — посчитай ОРИЕНТИР: площадь × нижняя и верхняя цена за м², с оговоркой «taxminan, aniq narx o'lchovdan keyin» / «ориентировочно, точная цена после замера». Считай аккуратно, округляй до тысяч.
-3а. ФОТО: когда говоришь о товаре, у которого есть фото, или клиент просит показать / «rasm tashlang» / «как выглядит» — поставь "show" с нужным фото (можно вместе с ответом). Фото: photo_garaj (гаражные ворота-рольставни), photo_rolstavni (рольставни на окна), photo_gilotina (гильотина), photo_perila (стеклянные перила), photo_surma (раздвижные двери), photo_dush (душевая кабина), photo_mdf (MDF дверь). Одно фото на товар, не отправляй одно и то же фото повторно.
+3а. ФОТО: когда говоришь о товаре, у которого есть фото, или клиент просит показать / «rasm tashlang» / «как выглядит» — поставь "show" с нужным фото (можно вместе с ответом). Фото: photo_garaj (гаражные ворота-рольставни), photo_rolstavni (рольставни на окна), photo_gilotina (гильотина), photo_perila (стеклянные перила), photo_surma (раздвижные двери), photo_dush (душевая кабина), photo_mdf (MDF дверь). Одно фото на товар, не отправляй одно и то же фото повторно. Для обычных пластиковых/алюминиевых окон и дверей (rom, deraza), карусельных и сенсорных дверей фото в базе НЕТ — не обещай «rasm yuboraman», дай ссылку: instagram.com/falcon_namangan1.
 4. Дальше предложи замер и точный расчёт: попроси имя и номер телефона, чтобы мастер связался и приехал на замер. Номер дал → action="lead", поблагодари: «Usta tez orada qo'ng'iroq qiladi» / «Мастер скоро позвонит».
 5. «Qimmat / дорого» → не спорь: объясни ценность (делаем под размер, турецкие приводы и профили Alusel, iDoL, аккуратный монтаж с проверкой механизмов) и предложи вариант дешевле, если есть (белый пластиковый профиль вместо алюминия; точную цену по размеру даст замер).
 6. Ремонт / сервис / «сломались ворота» → назови цену сервиса из базы и попроси номер и адрес, чтобы мастер приехал.
@@ -443,6 +473,9 @@ ALUPLAST_BLOCKS = {
                "<b>🔧 Сервис</b>\nАвтоматические ворота — 300 000 · Сенсорная дверь — 300 000 · Термо-пластик — 150 000 сум\n\n"
                "Точная цена зависит от размера и считается после замера."],
     },
+    "photo_more": {"uz_lat": ["Ishlarimiz rasmlari: instagram.com/falcon_namangan1 · aluplastluks.uz"],
+                   "uz_cyr": ["Ишларимиз расмлари: instagram.com/falcon_namangan1 · aluplastluks.uz"],
+                   "ru": ["Фото наших работ: instagram.com/falcon_namangan1 · aluplastluks.uz"]},
     "photo_garaj": {"uz_lat": [photo(ALU_MEDIA + "garaj_rolstavni.jpg", "Avtomatik pultli garaj darvoza-rolstavni")],
               "uz_cyr": [photo(ALU_MEDIA + "garaj_rolstavni.jpg", "Автоматик пултли гараж дарвоза-ролставни")],
               "ru": [photo(ALU_MEDIA + "garaj_rolstavni.jpg", "Автоматические гаражные ворота-рольставни с пультом")]},

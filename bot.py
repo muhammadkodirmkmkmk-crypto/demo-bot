@@ -1481,6 +1481,9 @@ def ai_reply(key):
         last_u.append(h["t"])
     if ag and out and not any(x == "branches" or x.startswith("branch_") for x in show):
         show += AGENTS.auto_show(ag, " ".join(last_u))     # lokatsiya so'radi — model unutsa ham xarita
+    if ag and out and not any(str(x).startswith("photo_") for x in show):
+        show += AGENTS.auto_photo(ag, " ".join(last_u), out,  # rasm so'radi / «rasmni yuboraman» — model unutsa ham rasm
+                                  [h["t"] for h in c["history"][-12:] if h["r"] == "u"])
     if ag and out and not show:
         show = AGENTS.promised_show(ag, out)                # «Mana narxlar:» — blok va'da qilingan, lekin qo'yilmagan
     if ag and out and not show and PRICE_REQ.search(" ".join(last_u)) and not re.search(r"\d{3}\s?000", " ".join(out)):
