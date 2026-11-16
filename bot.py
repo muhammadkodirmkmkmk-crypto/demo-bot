@@ -409,6 +409,17 @@ def send_msg(chat_id, text, bc_id=None):
         if bc_id:
             data["business_connection_id"] = bc_id
         return tg("sendVenue", data)
+    if text.startswith("\x00photo:"):        # mahsulot rasmi (URL) — izoh bilan
+        url, cap = text[len("\x00photo:"):].split("|", 1)
+        data = {"chat_id": chat_id, "photo": url}
+        if cap:
+            data["caption"] = cap
+        if bc_id:
+            data["business_connection_id"] = bc_id
+        r = tg("sendPhoto", data)
+        if not (r or {}).get("ok") and cap:  # rasm ketmasa — hech bo'lmasa izoh
+            return send_msg(chat_id, cap, bc_id)
+        return r
     data = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     if text.startswith("<b>"):              # tayyor bloklar (filiallar, smenalar) — qalin sarlavha
         data["parse_mode"] = "HTML"
@@ -435,7 +446,7 @@ def send_human(chat_id, parts, bc_id=None):
 def deliver(c, parts):
     """Kanalga qarab yuborish: Telegram yoki Instagram"""
     if c.get("channel") == "ig":
-        IG.send_parts(c, [AGENTS.venue_text(p) if p.startswith(AGENTS.VENUE) else re.sub(r"</?b>", "", p) for p in parts])
+        IG.send_parts(c, [AGENTS.venue_text(p) if p.startswith(AGENTS.VENUE) else p if p.startswith(AGENTS.PHOTO) else re.sub(r"</?b>", "", p) for p in parts])
     else:
         send_human(c["chat_id"], parts, c["bc_id"])
 
@@ -1487,7 +1498,7 @@ def ai_reply(key):
             deliver(c, out)
         with LOCK:
             for m in out:
-                c["history"].append({"r": "a", "t": AGENTS.venue_text(m) if m.startswith(AGENTS.VENUE) else re.sub(r"</?b>", "", m), "ts": time.time(), **({"voice": True} if voiced else {})})
+                c["history"].append({"r": "a", "t": AGENTS.part_text(m) if m.startswith(("\x00",)) else re.sub(r"</?b>", "", m), "ts": time.time(), **({"voice": True} if voiced else {})})
         stat(chat_channel(c), replies=1, msgs_out=len(out), voice_out=int(bool(voiced)))
     with LOCK:
         for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):

@@ -252,6 +252,26 @@ def venue_text(part):
 
 
 MAP = "https://maps.google.com/?q="
+PHOTO = "\x00photo:"
+
+
+def photo(url, caption=""):
+    return f"{PHOTO}{url}|{caption}"
+
+
+def photo_parts(part):
+    url, cap = part[len(PHOTO):].split("|", 1)
+    return url, cap
+
+
+def part_text(part):
+    """Tayyor blokning matn ko'rinishi (tarix uchun)"""
+    if part.startswith(VENUE):
+        return venue_text(part)
+    if part.startswith(PHOTO):
+        url, cap = photo_parts(part)
+        return "📷 " + (cap or "фото") + " (" + url.rsplit("/", 1)[-1] + ")"
+    return part
 BRANCH_KEYS = ["branch_nest", "branch_oybek", "branch_chilonzor", "branch_gorkiy"]
 BRANCH_WORDS = [r"nest|некст|нест|tashkent ?city|ташкент ?сити|toshkent ?siti|тошкент ?сити|karimov|каримов",
                 r"oybek|ойбек|айбек|ming ?o'?rik|минг ?ў?у?рик|afrosiyob|афросиё?аб",
@@ -341,39 +361,46 @@ ALUPLAST_PROMPT = """Ты — вежливый менеджер компании
 Адрес офиса: г. Наманган, рынок Заркан, махалля Зарафшон, дом 39 (Namangan sh., Zarkent bozori, Zarafshon mahallasi, 39-uy).
 Телефоны: +998 99 499 98 58, +998 91 357 01 83. Telegram: @proavtomatik. Instagram: falcon_namangan1. Сайт: aluplastluks.uz.
 
-ЦЕНЫ (за 1 м², сум):
-- Пластиковые окна и двери (стандарт) — 785 000 so'm/m²
-- Пластиковые окна и двери с двойным стеклом (2-qavat oynalik) — 1 130 000 so'm/m²
-- Стандартная алюминиевая дверь — 1 270 000 so'm/m²
-- Алюминиевая термо-дверь с двойным стеклом — 3 630 000 so'm/m²
-- Сенсорная автоматическая алюминиевая дверь (марка iDoL, Турция; для супермаркетов, Korzinka и т.п.) — 3 980 000 so'm/m²
-- Гаражные ворота автоматические с пультом (металлические «пенальные» + алюминий, марка Alusel, Турция) — 1 270 000 so'm/m²
-- Алюминиевая гильотина (автоматическая, с пультом, двойное стекло) — 3 600 000 so'm/m²; большие размеры — 2 390 000 so'm/m²
+ЦЕНЫ — клиент даёт ДИАПАЗОНЫ: точная цена зависит от размера и считается после замера. Всегда называй цену как диапазон «… dan … gacha» / «от … до …» и добавляй «aniq narx o'lchovdan keyin» / «точно — после замера». Одну цифру как окончательную НЕ называй.
+1. Пластиковые окна-двери, белый профиль, двойное стекло (2 qavat oynali) — 780 000–1 490 000 so'm/m².
+2. Пластиковые окна-двери, двойное стекло (другие профили) — 840 000–1 660 000 so'm/m², зависит от размера.
+3. Ориентир за штуку: одно пластиковое окно (белое, ~2 m²) — 970 000–3 000 000 so'm.
+4. Алюминиевые окна-двери — 1 490 000–3 785 000 so'm/m². Одна алюминиевая термо-дверь/окно (штука) — 4 874 000–5 960 000 so'm.
+5. Сенсорная автоматическая дверь (стандарт 1,50×2,30 м; iDoL, Турция; для супермаркетов, Korzinka и т.п.) — 13 970 000–27 600 000 so'm за штуку, с монтажом и установкой.
+6. Автоматические гаражные ворота-рольставни с пультом (Alusel, Турция) — 980 000–3 970 000 so'm/m².
+7. Рольставни на окна (современная замена решёткам) — 5 930 000–7 890 000 so'm за штуку.
+8. Алюминиевая гильотина (двойное стекло, автоматика, пульт) — 2 580 000–3 870 000 so'm/m². Пример: 3×3 = 9 m² ≈ 23 220 000 so'm. Готовая гильотина как на фото — 18 800 000–29 700 000 so'm.
+9. Стеклянные балконные перила (турецкие) — 890 000–1 800 000 so'm/m².
+10. Раздвижные (сдвижные) двери и окна — 970 000–1 987 000 so'm/m².
+11. Душевая кабина — 998 000–1 386 000 so'm/m².
+12. MDF дверь (крашеная) — 1 890 000–2 197 000 so'm/m².
 СЕРВИС (ремонт и обслуживание): автоматические ворота — 300 000 so'm; автоматическая сенсорная дверь — 300 000 so'm; термо-пластиковые окна и двери — 150 000 so'm.
-Пластиковые окна-двери в целом: от 785 000 до 1 130 000 so'm/m² (зависит от стекла и профиля).
-Перила, перголы, душевые кабины, карусельные двери, раздвижные перегородки — цены в базе нет: «narxini o'lcham bo'yicha usta hisoblab beradi» / «цену рассчитает мастер по размерам».
+Карусельные двери, перголы, обычные перегородки — цены в базе нет: «narxini o'lcham bo'yicha usta hisoblab beradi».
+Если клиент дал размеры — можно посчитать ориентир: площадь × нижняя и верхняя цена диапазона («taxminan … dan … gacha»).
 Чего НЕТ в базе (не выдумывай — «buni menejer aniqlab beradi» / «уточнит менеджер»): сроки изготовления, гарантия, стоимость и бесплатность замера, доставка и монтаж в другие регионы, рассрочка, скидки.
 
 ЛОГИКА ПРОДАЖИ
 1. Узнай, что нужно: окно/дверь, гаражные ворота, сенсорная дверь, гильотина, перегородка и т.д. Одним вопросом.
 2. Узнай объект (дом, магазин, офис, кафе) и примерные размеры (ширина × высота) и количество — без допроса, по одному вопросу.
-3. Спросили цену — сразу назови цену за м² из базы (или "show": "prices" для всего прайса). Если клиент дал размеры — можно посчитать ОРИЕНТИРОВОЧНО: площадь × цена за м², обязательно с оговоркой «taxminan, aniq narx o'lchovdan keyin» / «ориентировочно, точная цена после замера». Считай аккуратно, округляй до тысяч.
+3. Спросили цену — сразу назови диапазон из базы (или "show": "prices" для всего прайса). Если клиент дал размеры — посчитай ОРИЕНТИР: площадь × нижняя и верхняя цена за м², с оговоркой «taxminan, aniq narx o'lchovdan keyin» / «ориентировочно, точная цена после замера». Считай аккуратно, округляй до тысяч.
+3а. ФОТО: когда говоришь о товаре, у которого есть фото, или клиент просит показать / «rasm tashlang» / «как выглядит» — поставь "show" с нужным фото (можно вместе с ответом). Фото: photo_garaj (гаражные ворота-рольставни), photo_rolstavni (рольставни на окна), photo_gilotina (гильотина), photo_perila (стеклянные перила), photo_surma (раздвижные двери), photo_dush (душевая кабина), photo_mdf (MDF дверь). Одно фото на товар, не отправляй одно и то же фото повторно.
 4. Дальше предложи замер и точный расчёт: попроси имя и номер телефона, чтобы мастер связался и приехал на замер. Номер дал → action="lead", поблагодари: «Usta tez orada qo'ng'iroq qiladi» / «Мастер скоро позвонит».
-5. «Qimmat / дорого» → не спорь: объясни ценность (делаем под размер, турецкие приводы и профили Alusel, iDoL, аккуратный монтаж с проверкой механизмов) и предложи вариант дешевле, если есть (стандартный пластик вместо двойного стекла).
+5. «Qimmat / дорого» → не спорь: объясни ценность (делаем под размер, турецкие приводы и профили Alusel, iDoL, аккуратный монтаж с проверкой механизмов) и предложи вариант дешевле, если есть (белый пластиковый профиль вместо алюминия; точную цену по размеру даст замер).
 6. Ремонт / сервис / «сломались ворота» → назови цену сервиса из базы и попроси номер и адрес, чтобы мастер приехал.
 7. Адрес / «qayerdasiz» / локация → поставь "show": "branches" (программа отправит офис на карте). В messages — одна короткая фраза («Mana ofisimiz manzili:»). НИКОГДА не говори, что не можешь отправить локацию.
-8. Хочет фото работ / каталог → «Ishlarimizni Instagram'da ko'ring: instagram.com/falcon_namangan1 yoki saytda: aluplastluks.uz».
+8. Хочет больше фото работ / каталог → сначала фото по товару через "show", и ссылка: «Boshqa ishlarimiz: instagram.com/falcon_namangan1, sayt: aluplastluks.uz».
 9. Жалоба / претензия по установленному изделию → извинись один раз, попроси номер и адрес, скажи, что мастер лично разберётся; action="handoff".
 
-ДОП. ПОЛЕ JSON: "show": "" | "prices" | "branches" — какой готовый блок программа отправит перед твоим последним сообщением. Прайс списком сам не перечисляй — только через "show": "prices" (одну-две цены называть можно).
+ДОП. ПОЛЕ JSON: "show": "" | "prices" | "branches" | "photo_garaj" | "photo_rolstavni" | "photo_gilotina" | "photo_perila" | "photo_surma" | "photo_dush" | "photo_mdf" — готовый блок (можно список, например ["photo_gilotina"]), программа отправит его перед твоим последним сообщением. Прайс списком сам не перечисляй — только через "show": "prices" (одну-две цены называть можно).
 
 ПОЛЯ КАРТОЧКИ (для менеджера)
 - business — объект клиента (дом, магазин, офис…) и город/район, если сказал. need — что нужно: изделие, размеры, количество, материал. budget — если назвал. note — 1 фраза на русском.
 
 ПРИМЕРЫ (клиент → messages; узбекский — латиницей)
-«Plastik deraza narxi qancha?» → ["Plastik deraza 1 m² — 785 000 so'm, 2 qavat oynali — 1 130 000 so'm.", "O'lchami qancha, nechta deraza kerak?"]
-«Garaj darvoza 3x2.5 qancha bo'ladi?» → ["Avtomatik pultli garaj darvoza 1 m² — 1 270 000 so'm, 7,5 m² uchun taxminan 9 525 000 so'm.", "Aniq narx o'lchovdan keyin bo'ladi. Ismingiz va raqamingizni qoldirasizmi, usta o'lchovga boradi?"]
-«Сенсорная дверь для магазина сколько?» → ["Сенсорная автоматическая дверь iDoL (Турция) — 3 980 000 сум за м².", "Какой примерно размер проёма?"]
+«Plastik deraza narxi qancha?» → ["Plastik deraza 1 m² — 780 000 dan 1 490 000 so'mgacha, o'lchamga qarab.", "O'lchami qancha, nechta deraza kerak?"]
+«Garaj darvoza 3x2.5 qancha bo'ladi?» → ["Pultli garaj darvoza 1 m² — 980 000 dan 3 970 000 so'mgacha. 7,5 m² uchun taxminan 7 350 000 dan 29 775 000 so'mgacha.", "Aniq narx o'lchovdan keyin. Ismingiz va raqamingizni qoldirasizmi, usta o'lchovga boradi?"] + "show": "photo_garaj"
+«Gilotina bormi? Rasmini tashlang» → ["Ha, bor — 2 qavat oynali, pultli. 1 m² — 2 580 000 dan 3 870 000 so'mgacha.", "Qaysi joyga kerak, o'lchami qancha?"] + "show": "photo_gilotina"
+«Сенсорная дверь для магазина сколько?» → ["Сенсорная дверь iDoL (Турция), стандарт 1,5×2,3 м — от 13 970 000 до 27 600 000 сум с установкой.", "Какой примерно размер проёма?"]
 «Darvozam ishlamay qoldi» → ["Avtomatik darvoza servisi — 300 000 so'm.", "Raqamingiz va manzilingizni yozing, usta borib ko'radi."]
 «Qayerdasizlar?» → ["Mana ofisimiz manzili:"] + "show": "branches"
 """
@@ -383,31 +410,60 @@ ALUPLAST_OFFICE = {"lat": 40.987675, "lon": 71.643908,
                    "uz_cyr": ("ALU PLAS LUKS офиси", "Наманган ш., Заркент бозори, Зарафшон маҳалласи, 39-уй"),
                    "ru": ("Офис ALU PLAS LUKS", "г. Наманган, рынок Заркан, махалля Зарафшон, дом 39")}
 
+ALU_MEDIA = "https://lead-crm-production-da14.up.railway.app/media/aluplast/"
+
 ALUPLAST_BLOCKS = {
     "branches": {sc: [venue(ALUPLAST_OFFICE, sc)] for sc in ("uz_lat", "uz_cyr", "ru")},
     "prices": {
-        "uz_lat": ["<b>🏠 Eshik-deraza</b>\nPlastik eshik-deraza (standart) — 785 000 so'm/m²\nPlastik eshik-deraza (2 qavat oynali) — 1 130 000 so'm/m²\n"
-                   "Standart aluminiy eshik — 1 270 000 so'm/m²\nAluminiy termo eshik (2 qavat oynali) — 3 630 000 so'm/m²\n\n"
-                   "<b>🚪 Avtomatik eshiklar</b>\nSensorli avtomatik aluminiy eshik (iDoL, Turkiya) — 3 980 000 so'm/m²\n\n"
-                   "<b>🚗 Garaj darvozalari</b>\nAvtomatik pultli garaj darvoza (Alusel, Turkiya) — 1 270 000 so'm/m²\n\n"
-                   "<b>🏭 Gilotina</b>\nAluminiy gilotina (avtomatik, pultli, 2 qavat oynali) — 3 600 000 so'm/m²\nKatta o'lchamli gilotina — 2 390 000 so'm/m²\n\n"
-                   "<b>🔧 Servis</b>\nAvtomatik darvoza — 300 000 so'm\nAvtomatik sensorli eshik — 300 000 so'm\nTermo plastik eshik-deraza — 150 000 so'm\n\n"
-                   "Aniq narx o'lchovdan keyin hisoblanadi."],
-        "uz_cyr": ["<b>🏠 Эшик-дераза</b>\nПластик эшик-дераза (стандарт) — 785 000 сўм/м²\nПластик эшик-дераза (2 қават ойнали) — 1 130 000 сўм/м²\n"
-                   "Стандарт алюминий эшик — 1 270 000 сўм/м²\nАлюминий термо эшик (2 қават ойнали) — 3 630 000 сўм/м²\n\n"
-                   "<b>🚪 Автоматик эшиклар</b>\nСенсорли автоматик алюминий эшик (iDoL, Туркия) — 3 980 000 сўм/м²\n\n"
-                   "<b>🚗 Гараж дарвозалари</b>\nАвтоматик пултли гараж дарвоза (Alusel, Туркия) — 1 270 000 сўм/м²\n\n"
-                   "<b>🏭 Гилотина</b>\nАлюминий гилотина (автоматик, пултли, 2 қават ойнали) — 3 600 000 сўм/м²\nКатта ўлчамли гилотина — 2 390 000 сўм/м²\n\n"
-                   "<b>🔧 Сервис</b>\nАвтоматик дарвоза — 300 000 сўм\nАвтоматик сенсорли эшик — 300 000 сўм\nТермо пластик эшик-дераза — 150 000 сўм\n\n"
-                   "Аниқ нарх ўлчовдан кейин ҳисобланади."],
-        "ru": ["<b>🏠 Окна и двери</b>\nПластиковые окна и двери (стандарт) — 785 000 сум/м²\nПластиковые окна и двери (двойное стекло) — 1 130 000 сум/м²\n"
-               "Стандартная алюминиевая дверь — 1 270 000 сум/м²\nАлюминиевая термо-дверь (двойное стекло) — 3 630 000 сум/м²\n\n"
-               "<b>🚪 Автоматические двери</b>\nСенсорная автоматическая алюминиевая дверь (iDoL, Турция) — 3 980 000 сум/м²\n\n"
-               "<b>🚗 Гаражные ворота</b>\nАвтоматические с пультом (Alusel, Турция) — 1 270 000 сум/м²\n\n"
-               "<b>🏭 Гильотина</b>\nАлюминиевая гильотина (автоматика, пульт, двойное стекло) — 3 600 000 сум/м²\nБольшие размеры — 2 390 000 сум/м²\n\n"
-               "<b>🔧 Сервис</b>\nАвтоматические ворота — 300 000 сум\nСенсорная автоматическая дверь — 300 000 сум\nТермо-пластиковые окна и двери — 150 000 сум\n\n"
-               "Точная цена — после замера."],
+        "uz_lat": ["<b>🏠 Plastik eshik-deraza</b> (2 qavat oynali)\nOq profil — 780 000–1 490 000 so'm/m²\nBoshqa profillar — 840 000–1 660 000 so'm/m²\n1 dona deraza (~2 m²) — 970 000–3 000 000 so'm\n\n"
+                   "<b>🔷 Aluminiy eshik-deraza</b>\n1 490 000–3 785 000 so'm/m²\nTermo eshik/deraza (dona) — 4 874 000–5 960 000 so'm\n\n"
+                   "<b>🚪 Sensorli avtomatik eshik</b> (iDoL, Turkiya)\n1,50×2,30 m — 13 970 000–27 600 000 so'm (o'rnatish bilan)\n\n"
+                   "<b>🚗 Garaj darvoza-rolstavni</b> (pultli, Alusel)\n980 000–3 970 000 so'm/m²\n"
+                   "<b>🪟 Deraza rolstavni</b> (panjara o'rniga)\n5 930 000–7 890 000 so'm/dona\n\n"
+                   "<b>🏭 Aluminiy gilotina</b> (2 qavat oyna, pultli)\n2 580 000–3 870 000 so'm/m²\n\n"
+                   "<b>✨ Boshqalar</b>\nBalkon oyna perilalari — 890 000–1 800 000 so'm/m²\nSurma eshik-deraza — 970 000–1 987 000 so'm/m²\nDush kabina — 998 000–1 386 000 so'm/m²\nMDF eshik — 1 890 000–2 197 000 so'm/m²\n\n"
+                   "<b>🔧 Servis</b>\nAvtomatik darvoza — 300 000 · Sensorli eshik — 300 000 · Termo plastik — 150 000 so'm\n\n"
+                   "Aniq narx o'lchamga qarab, o'lchovdan keyin hisoblanadi."],
+        "uz_cyr": ["<b>🏠 Пластик эшик-дераза</b> (2 қават ойнали)\nОқ профил — 780 000–1 490 000 сўм/м²\nБошқа профиллар — 840 000–1 660 000 сўм/м²\n1 дона дераза (~2 м²) — 970 000–3 000 000 сўм\n\n"
+                   "<b>🔷 Алюминий эшик-дераза</b>\n1 490 000–3 785 000 сўм/м²\nТермо эшик/дераза (дона) — 4 874 000–5 960 000 сўм\n\n"
+                   "<b>🚪 Сенсорли автоматик эшик</b> (iDoL, Туркия)\n1,50×2,30 м — 13 970 000–27 600 000 сўм (ўрнатиш билан)\n\n"
+                   "<b>🚗 Гараж дарвоза-ролставни</b> (пултли, Alusel)\n980 000–3 970 000 сўм/м²\n"
+                   "<b>🪟 Дераза ролставни</b> (панжара ўрнига)\n5 930 000–7 890 000 сўм/дона\n\n"
+                   "<b>🏭 Алюминий гилотина</b> (2 қават ойна, пултли)\n2 580 000–3 870 000 сўм/м²\n\n"
+                   "<b>✨ Бошқалар</b>\nБалкон ойна перилалари — 890 000–1 800 000 сўм/м²\nСурма эшик-дераза — 970 000–1 987 000 сўм/м²\nДуш кабина — 998 000–1 386 000 сўм/м²\nMDF эшик — 1 890 000–2 197 000 сўм/м²\n\n"
+                   "<b>🔧 Сервис</b>\nАвтоматик дарвоза — 300 000 · Сенсорли эшик — 300 000 · Термо пластик — 150 000 сўм\n\n"
+                   "Аниқ нарх ўлчамга қараб, ўлчовдан кейин ҳисобланади."],
+        "ru": ["<b>🏠 Пластиковые окна и двери</b> (двойное стекло)\nБелый профиль — 780 000–1 490 000 сум/м²\nДругие профили — 840 000–1 660 000 сум/м²\nОдно окно (~2 м²) — 970 000–3 000 000 сум\n\n"
+               "<b>🔷 Алюминиевые окна и двери</b>\n1 490 000–3 785 000 сум/м²\nТермо-дверь/окно (штука) — 4 874 000–5 960 000 сум\n\n"
+               "<b>🚪 Сенсорная автоматическая дверь</b> (iDoL, Турция)\n1,50×2,30 м — 13 970 000–27 600 000 сум (с установкой)\n\n"
+               "<b>🚗 Гаражные ворота-рольставни</b> (пульт, Alusel)\n980 000–3 970 000 сум/м²\n"
+               "<b>🪟 Рольставни на окна</b> (вместо решёток)\n5 930 000–7 890 000 сум/шт\n\n"
+               "<b>🏭 Алюминиевая гильотина</b> (двойное стекло, пульт)\n2 580 000–3 870 000 сум/м²\n\n"
+               "<b>✨ Другое</b>\nСтеклянные балконные перила — 890 000–1 800 000 сум/м²\nРаздвижные двери и окна — 970 000–1 987 000 сум/м²\nДушевая кабина — 998 000–1 386 000 сум/м²\nMDF дверь — 1 890 000–2 197 000 сум/м²\n\n"
+               "<b>🔧 Сервис</b>\nАвтоматические ворота — 300 000 · Сенсорная дверь — 300 000 · Термо-пластик — 150 000 сум\n\n"
+               "Точная цена зависит от размера и считается после замера."],
     },
+    "photo_garaj": {"uz_lat": [photo(ALU_MEDIA + "garaj_rolstavni.jpg", "Avtomatik pultli garaj darvoza-rolstavni")],
+              "uz_cyr": [photo(ALU_MEDIA + "garaj_rolstavni.jpg", "Автоматик пултли гараж дарвоза-ролставни")],
+              "ru": [photo(ALU_MEDIA + "garaj_rolstavni.jpg", "Автоматические гаражные ворота-рольставни с пультом")]},
+    "photo_rolstavni": {"uz_lat": [photo(ALU_MEDIA + "deraza_rolstavni_2.jpg", "Deraza uchun rolstavni — panjara o'rniga"), photo(ALU_MEDIA + "deraza_rolstavni_1.jpg", "")],
+              "uz_cyr": [photo(ALU_MEDIA + "deraza_rolstavni_2.jpg", "Дераза учун ролставни — панжара ўрнига"), photo(ALU_MEDIA + "deraza_rolstavni_1.jpg", "")],
+              "ru": [photo(ALU_MEDIA + "deraza_rolstavni_2.jpg", "Рольставни на окна — вместо решёток"), photo(ALU_MEDIA + "deraza_rolstavni_1.jpg", "")]},
+    "photo_gilotina": {"uz_lat": [photo(ALU_MEDIA + "gilotina.jpg", "Aluminiy gilotina — 2 qavat oyna, pultli")],
+              "uz_cyr": [photo(ALU_MEDIA + "gilotina.jpg", "Алюминий гилотина — 2 қават ойна, пултли")],
+              "ru": [photo(ALU_MEDIA + "gilotina.jpg", "Алюминиевая гильотина — двойное стекло, пульт")]},
+    "photo_perila": {"uz_lat": [photo(ALU_MEDIA + "oyna_perila_1.jpg", "Balkon oyna perilalari"), photo(ALU_MEDIA + "oyna_perila_3.jpg", "")],
+              "uz_cyr": [photo(ALU_MEDIA + "oyna_perila_1.jpg", "Балкон ойна перилалари"), photo(ALU_MEDIA + "oyna_perila_3.jpg", "")],
+              "ru": [photo(ALU_MEDIA + "oyna_perila_1.jpg", "Стеклянные балконные перила"), photo(ALU_MEDIA + "oyna_perila_3.jpg", "")]},
+    "photo_surma": {"uz_lat": [photo(ALU_MEDIA + "surma_eshik.jpg", "Surma (razdvijnoy) eshik-deraza")],
+              "uz_cyr": [photo(ALU_MEDIA + "surma_eshik.jpg", "Сурма (раздвижной) эшик-дераза")],
+              "ru": [photo(ALU_MEDIA + "surma_eshik.jpg", "Раздвижные двери")]},
+    "photo_dush": {"uz_lat": [photo(ALU_MEDIA + "dush_kabina.jpg", "Dush kabina")],
+              "uz_cyr": [photo(ALU_MEDIA + "dush_kabina.jpg", "Душ кабина")],
+              "ru": [photo(ALU_MEDIA + "dush_kabina.jpg", "Душевая кабина")]},
+    "photo_mdf": {"uz_lat": [photo(ALU_MEDIA + "mdf_eshik.jpg", "MDF eshik")],
+              "uz_cyr": [photo(ALU_MEDIA + "mdf_eshik.jpg", "MDF эшик")],
+              "ru": [photo(ALU_MEDIA + "mdf_eshik.jpg", "MDF дверь")]}
 }
 
 PRESETS = {

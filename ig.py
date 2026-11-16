@@ -154,7 +154,25 @@ def send_parts(c, parts):
     if not t or not t.get("token"):
         print("IG send skipped: no token for tenant", c.get("tenant"))
         return
+    seq = []                              # mahsulot rasmi: rasm (attachment), keyin izoh — tartib saqlanadi
     for p in parts:
+        if p.startswith("\x00photo:"):
+            url, cap = p[len("\x00photo:"):].split("|", 1)
+            seq.append(("img", url))
+            if cap:
+                seq.append(("txt", cap))
+        else:
+            seq.append(("txt", p))
+    for kind, p in seq:
+        if kind == "img":
+            st, res = graph("POST", "me/messages", json_body={"recipient": {"id": c["chat_id"]}, "message": {
+                "attachment": {"type": "image", "payload": {"url": p}}}}, token=t["token"])
+            if st == 200 and res.get("message_id"):
+                with LOCK:
+                    OUR_SENT[res["message_id"]] = time.time()
+            else:
+                print("IG image error:", t.get("username"), st, json.dumps(res)[:200])
+            continue
         with LOCK:
             PENDING[(str(c["chat_id"]), norm(p[:900]))] = time.time()
         if core.TYPING_DELAY:
