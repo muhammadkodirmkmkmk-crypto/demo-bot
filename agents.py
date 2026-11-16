@@ -519,7 +519,7 @@ PRESETS = {
                 "report_also": ["6333364866", "963318006"]},   # Express hisobotlari qo'shimcha shu chatga ham
     "aluplast": {"slug": "aluplast", "company": "ALU PLAS LUKS", "own_bot": True, "prompt": ALUPLAST_PROMPT, "blocks": ALUPLAST_BLOCKS,
                  "fix": [(r"\+?\(?998\)?[\s-]*99[\s-]*499[\s-]*98[\s-]*58", "+998 99 499 98 58")],
-                 "site": "https://aluplastluks.uz", "owners": [], "report_chat": "", "ig_tenant": "", "enabled": True,
+                 "site": "https://aluplastluks.uz", "owners": [], "report_chat": "", "ig_tenant": "", "ig_username": "falcon_namangan1", "enabled": True,
                  "report_also": []},
 }
 
@@ -578,6 +578,14 @@ def for_ig_tenant(ig_id):
     for s, a in agents().items():
         if a.get("enabled", True) and str(a.get("ig_tenant") or "") == str(ig_id or ""):
             return s
+    try:                                   # oldindan biriktirilgan Instagram username (ulangan zahoti ishlaydi)
+        un = ((core.IG.tenants().get(str(ig_id)) or {}).get("username") or "").lower()
+    except Exception:
+        un = ""
+    if un:
+        for s, a in agents().items():
+            if a.get("enabled", True) and not a.get("ig_tenant") and (a.get("ig_username") or "").lower() == un:
+                return s
     return None
 
 
