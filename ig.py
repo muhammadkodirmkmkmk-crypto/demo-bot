@@ -308,12 +308,33 @@ def profile_name(t, igsid):
     return "", ""
 
 
+USERNAME_TRY = {}
+
+
+def ensure_username(t):
+    """OAuth paytida username kelmagan bo'lsa — keyinroq o'zimiz so'rab olamiz (agentga avtomatik bog'lash uchun)"""
+    if not t or t.get("username") or time.time() - USERNAME_TRY.get(t.get("ig_id"), 0) < 600:
+        return t
+    USERNAME_TRY[t.get("ig_id")] = time.time()
+    for path in ("me", t.get("ig_id")):
+        st, me = graph("GET", path, params={"fields": "username,name"}, token=t.get("token"))
+        if st == 200 and me.get("username"):
+            t["username"], t["name"] = me["username"], me.get("name") or t.get("name", "")
+            save_tenant(t)
+            print("IG username resolved:", t["ig_id"], t["username"])
+            ag = core.AGENTS.for_ig_tenant(t["ig_id"])
+            notify_admin(f"Instagram {t['ig_id']} = @{t['username']}" + (f" → агент {core.AGENTS.name(ag)}, бот отвечает." if ag else "."))
+            break
+        print("IG username fetch failed:", path, st, json.dumps(me)[:200])
+    return t
+
+
 def on_webhook(payload):
     if payload.get("object") != "instagram":
         return
     for entry in payload.get("entry", []):
         ig_id = str(entry.get("id"))
-        t = tenants().get(ig_id)
+        t = ensure_username(tenants().get(ig_id))
         for ev in entry.get("messaging", []):
             msg = ev.get("message")
             if not msg or msg.get("is_deleted"):
@@ -402,6 +423,13 @@ def finish_oauth(code):
     expires = time.time() + int(ll.get("expires_in") or 3600)
     st, me = graph("GET", "me", params={"fields": "user_id,username,name"}, token=token)
     ig_id = str(me.get("user_id") or me.get("id") or res.get("user_id") or "")
+    if ig_id and not me.get("username"):          # ba'zan username kelmaydi — qayta so'raymiz
+        for path in ("me", ig_id):
+            st_u, me_u = graph("GET", path, params={"fields": "username,name"}, token=token)
+            if me_u.get("username"):
+                me = dict(me, **me_u)
+                break
+    print("IG oauth:", ig_id, me.get("username") or "(no username)", st)
     if not ig_id:
         return None, "Не удалось получить профиль: " + json.dumps(me)[:300]
     st2, sub = graph("POST", "me/subscribed_apps", params={"subscribed_fields": "messages"}, token=token)
