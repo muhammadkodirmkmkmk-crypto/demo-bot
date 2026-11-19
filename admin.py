@@ -215,6 +215,28 @@ def is_admin(h):
 STAFF_POST = ("/admin/api/deal", "/admin/api/remind", "/admin/api/client", "/admin/api/new", "/admin/api/bot", "/admin/api/history")
 
 
+NEED_CATS = (  # bitta mijoz — bitta aniq toifa (birinchi mos kelgani)
+    ("Записаться", r"yozil|ro.?yxat|запис|ёзил|рўйхат|boshla|начать"),
+    ("Рассрочка", r"bo.?lib|рассроч|kredit|кредит|nasiya|насия|бўлиб"),
+    ("Замер / установка", r"o.?lchov|замер|ўлчов|o.?rnat|установ|монтаж"),
+    ("Права / экзамен", r"guvohnoma|prava|прав|imtihon|экзам|имтиҳон|гувоҳнома|nogiron|инвалид"),
+    ("Сроки и график", r"muddat|jadval|qancha vaqt|necha oy|срок|график|расписан|муддат|жадвал|vaqt"),
+    ("Адрес / филиал", r"lokats|manzil|filial|адрес|филиал|локац|манзил|qayerda|где"),
+    ("Цена", r"narx|so.?m|цен|стоим|сум|нарх|сўм|qancha|сколько|\d{3}\s?\d{3}"),
+    ("Курс и обучение", r"kurs|курс|o.?qish|учеб|обуч|dars|дарс|ўқиш|toifa|категор"),
+)
+
+
+def need_cat(*texts):
+    t = " ".join(str(x or "") for x in texts).lower()
+    if not t.strip():
+        return ""
+    for name, rx in NEED_CATS:
+        if re.search(rx, t):
+            return name
+    return "Другое"
+
+
 def staff_view(d):
     """Xodim uchun: faqat qo'ng'iroqlar va mijozlar, pul/xarajat maydonlarisiz"""
     crm = []
@@ -227,7 +249,7 @@ def staff_view(d):
     proc = {ch: {k: v for k, v in p.items() if k != "revenue"} for ch, p in d["proc"].items()}
     needs = {}
     for x in d["leads"]:
-        n = (x["facts"].get("offer") or x["facts"].get("need") or "").strip()[:60]
+        n = need_cat(x["facts"].get("need"), x["facts"].get("offer"))
         if n:
             needs[n] = needs.get(n, 0) + 1
     f = d["funnel"]
@@ -1371,9 +1393,8 @@ PAGE = r"""<!doctype html>
 <title>AI Business — панель</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{--bg:var(--tg-theme-bg-color,#fff);--bg2:var(--tg-theme-secondary-bg-color,#f2f3f5);--tx:var(--tg-theme-text-color,#111);
---mut:var(--tg-theme-hint-color,#8a8f98);--ac:var(--tg-theme-button-color,#2a7de1);--act:var(--tg-theme-button-text-color,#fff);
---tg:#2a9fd8;--ig:#d6337a;--ok:#2e9e5b;--bad:#d9534f;--warn:#e69a28}
+:root{--bg:#FFFFFF;--bg2:#EEF6FF;--tx:#0A0A0B;--mut:#5E6672;--ac:#2F6BF6;--act:#FFFFFF;--sky:#BFE1FF;--bord:#8A1424;--ink:#0A0A0B;
+--tg:#2F6BF6;--ig:#8A1424;--ok:#2F6BF6;--bad:#8A1424;--warn:#B4535F}
 *{box-sizing:border-box}body{margin:0;background:var(--bg2);color:var(--tx);font:15px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
 header{position:sticky;top:0;z-index:5;background:var(--bg2);
  padding:calc(10px + var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)) 12px 6px}
@@ -1434,7 +1455,7 @@ select.fi{appearance:auto}
 #err{display:none;padding:30px 16px;text-align:center}
 @media(min-width:700px){#per{flex-wrap:wrap}}
 #per .chip.on{box-shadow:0 2px 8px #2a7de155}
-.hero{border-radius:18px;padding:16px;margin:8px 0 10px;color:#fff;background:linear-gradient(135deg,#1f6fd6 0%,#7b3fe4 55%,#d6337a 100%);box-shadow:0 6px 20px #1f6fd633}
+.hero{border-radius:18px;padding:16px;margin:8px 0 10px;color:#fff;background:linear-gradient(135deg,#0A0A0B 0%,#1A3D9E 55%,#2F6BF6 100%);box-shadow:0 6px 20px #2F6BF633}
 .hero h2{margin:0;font-size:19px}.hero .sub{opacity:.85;font-size:13px;margin-top:2px}
 .hero .big{display:flex;gap:18px;margin-top:12px;flex-wrap:wrap}.hero .big div b{display:block;font-size:30px;line-height:1.1;font-variant-numeric:tabular-nums}
 .hero .big div span{font-size:12px;opacity:.85}
@@ -1458,7 +1479,7 @@ select.fi{appearance:auto}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media(min-width:700px){.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}}
 .stack{height:14px;border-radius:7px;overflow:hidden;display:flex;background:var(--bg2);margin:8px 0}.stack i{display:block;height:100%}
 .cline{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px}.cline .sw{width:10px;height:10px;border-radius:3px;flex:none}.cline b{margin-left:auto}
-.hero.cost{background:linear-gradient(135deg,#0f766e 0%,#1f6fd6 60%,#4338ca 100%)}
+.hero.cost{background:linear-gradient(135deg,#0A0A0B 0%,#5A0D18 55%,#8A1424 100%)}
 
 </style></head><body>
 <header>
@@ -1470,7 +1491,7 @@ select.fi{appearance:auto}
 <div id="modal"></div>
 <script>
 const tg=window.Telegram&&Telegram.WebApp;
-if(tg){tg.ready();tg.expand();
+if(tg){tg.ready();tg.expand();try{tg.setHeaderColor&&tg.setHeaderColor("#EEF6FF");tg.setBackgroundColor&&tg.setBackgroundColor("#EEF6FF");}catch(e){}
  try{if(tg.isVersionAtLeast&&tg.isVersionAtLeast("8.0")){tg.requestFullscreen();}}catch(e){}      // на весь экран (телефон и компьютер)
  try{tg.disableVerticalSwipes&&tg.disableVerticalSwipes();}catch(e){}                              // свайп вниз не закрывает панель
 }
@@ -1491,7 +1512,7 @@ function customPer(){
 }
 let TABS=[["calls","Звонки"],["crm","Клиенты"],["fin","Финансы"],["ov","Обзор"],["fn","Воронка"],["cost","Бот"],["aic","ИИ-клиенты"]];
 const STAFF=()=>st.data&&st.data.role=="staff";
-const COL={tg:"var(--tg)",ig:"var(--ig)",manual:"#8a8f98"};
+const COL={tg:"var(--tg)",ig:"var(--ig)",manual:"#9AA3AE"};
 let st={per:"month",tab:"calls",data:null,lf:"hot",q:"",sf:"active",qfocus:false,ap:"month",aic:null};
 try{const s=JSON.parse(localStorage.getItem("adm")||"{}");Object.assign(st,{per:s.per||st.per,tab:s.tab||st.tab})}catch(e){}
 const $=s=>document.querySelector(s);
@@ -1603,7 +1624,7 @@ function aic(){
  const A=st.aic,W=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
  const chipsA="";
  if(!A.items.length)return chipsA+`<div class="card mut">Пока нет клиентов с ИИ-агентом.</div>`;
- const CA="#7b3fe4",CV="#e69a28",CS="#0f9d8f";
+ const CA="#0A0A0B",CV="#B4535F",CS="#7FB3F7";
  const all=A.items.reduce((s,x)=>({spend:s.spend+x.spend,ai:s.ai+x.ai,tts:s.tts+x.tts_usd,srv:s.srv+x.server,d:s.d+x.dialogs,l:s.l+x.leads}),{spend:0,ai:0,tts:0,srv:0,d:0,l:0});
  const head=A.items.length>1?`<div class="hero cost"><h2>Все ИИ-клиенты</h2><div class="sub">${esc(A.label)} · ${A.items.length} клиентов</div>
   <div class="big"><div><b>${money(all.spend)}</b><span>расходы всего</span></div><div><b>${all.d}</b><span>диалогов</span></div><div><b>${all.l}</b><span>контактов</span></div></div></div>`:"";
@@ -1621,8 +1642,8 @@ function aic(){
   <div class="big"><div><b>${money(x.spend)}</b><span>расходы за период</span></div><div><b>${money(perDay*30,0)}</b><span>прогноз в месяц</span></div><div><b>${x.dialogs?money(x.per_dialog,3):"—"}</b><span>цена диалога</span></div></div></div>
   <div class="kpis g4">
    <div class="kc" style="--c:var(--tg)"><span class="ic">💬</span><b>${x.dialogs}</b><span>диалогов</span></div>
-   <div class="kc" style="--c:#2e9e5b"><span class="ic">📞</span><b>${x.leads}</b><span>контактов · ${pct(x.leads,x.dialogs)}</span></div>
-   <div class="kc" style="--c:#e0582f"><span class="ic">🎯</span><b>${x.leads?money(x.per_lead):"—"}</b><span>цена контакта</span></div>
+   <div class="kc" style="--c:#2F6BF6"><span class="ic">📞</span><b>${x.leads}</b><span>контактов · ${pct(x.leads,x.dialogs)}</span></div>
+   <div class="kc" style="--c:#B4353F"><span class="ic">🎯</span><b>${x.leads?money(x.per_lead):"—"}</b><span>цена контакта</span></div>
    <div class="kc" style="--c:${CA}"><span class="ic">📆</span><b>${money(perDay,2)}</b><span>в среднем в день</span></div></div>
   <div class="card"><h3>💸 Из чего расходы</h3>
    <div class="stack" style="height:18px"><i style="width:${100*x.ai/sp}%;background:${CA}"></i><i style="width:${100*x.tts_usd/sp}%;background:${CV}"></i><i style="width:${100*x.server/sp}%;background:${CS}"></i></div>
@@ -1640,7 +1661,7 @@ function aic(){
    <div class="leg" style="flex:1"><div><span class="dot" style="background:var(--tg)"></span>Telegram<b>${tgD}</b></div><div><span class="dot" style="background:var(--ig)"></span>Instagram<b>${igD}</b></div>
    <div class="mut" style="font-size:12px">На 1 диалог: ИИ ${x.dialogs?money(x.ai/x.dialogs,4):"—"} · голос ${x.dialogs?money(x.tts_usd/x.dialogs,4):"—"}</div></div></div></div>
   ${x.daily.length>1?`<div class="card"><h3>Новые диалоги по дням</h3><div class="chart">${bars}</div>${axis}</div>`:""}
-  <div class="card"><h3>📅 По дням недели</h3>${W.map((n,i)=>`<div class="tagb"><span class="n" style="width:30px">${n}</span><span class="t"><i style="width:${100*x.weekday[i]/mw}%;background:linear-gradient(90deg,#2a7de1,#7b3fe4)"></i></span><b>${x.weekday[i]}</b></div>`).join("")}</div>`}).join("");
+  <div class="card"><h3>📅 По дням недели</h3>${W.map((n,i)=>`<div class="tagb"><span class="n" style="width:30px">${n}</span><span class="t"><i style="width:${100*x.weekday[i]/mw}%;background:linear-gradient(90deg,#2F6BF6,#0A0A0B)"></i></span><b>${x.weekday[i]}</b></div>`).join("")}</div>`}).join("");
 }
 async function loadAic(){
  if(st.aicBusy)return;st.aicBusy=true;
@@ -1679,19 +1700,19 @@ function crmCard(c,admin){
  if(!c)return admin?`<div class="card"><h3>📞 Обработка заявок (CRM)</h3><p class="mut" style="margin:0">CRM не подключена. В CRM: «Доступы» → «Создать ключ» → отправьте боту команду /crm_hook.</p></div>`:"";
  const ft=c.first_touch||{},real=Math.max(1,c.real||0),pc=(a,b)=>b?Math.round(100*a/b)+"%":"—";
  const mm=m=>m==null?"—":m<1?"< 1 мин":m<60?Math.round(m)+" мин":m<1440?(m/60).toFixed(1).replace(".0","")+" ч":(m/1440).toFixed(1).replace(".0","")+" дн";
- const grade=ft.median_min==null?"":ft.median_min<=15?["#2e9e5b","отлично"]:ft.median_min<=60?["#e69a28","нормально"]:["#e0582f","медленно"];
- const CC={new:"#2a7de1",no_answer:"#e69a28",contacted:"#7b3fe4",thinking:"#d6337a",meeting:"#0f9d8f",won:"#2e9e5b",lost:"#8a94a6",spam:"#e0582f"};
+ const grade=ft.median_min==null?"":ft.median_min<=15?["#2F6BF6","отлично"]:ft.median_min<=60?["#B4535F","нормально"]:["#B4353F","медленно"];
+ const CC={new:"#2F6BF6",no_answer:"#B4535F",contacted:"#0A0A0B",thinking:"#8A1424",meeting:"#7FB3F7",won:"#2F6BF6",lost:"#9AA3AE",spam:"#B4353F"};
  const mx=Math.max(1,...c.pipeline.map(([k])=>c.by_status[k]||0));
  const kc=(col,ic,v,l)=>`<div class="kc" style="--c:${col}"><span class="ic">${ic}</span><b>${v}</b><span>${l}</span></div>`;
  return `<div class="card"><h3>📞 Обработка заявок (CRM)</h3><p class="mut" style="margin:0 0 8px">Как менеджеры работают с заявками за период: скорость звонка, дозвон, записи.</p>
   <div class="kpis g4" style="margin:0">
-   ${kc(grade?grade[0]:"#2a7de1","⚡",mm(ft.median_min),"до первого звонка"+(grade?` · <em style="font-style:normal;font-weight:700;color:${grade[0]}">${grade[1]}</em>`:""))}
-   ${kc("#2e9e5b","⏱",pc(ft.in15,ft.n),"обработаны за 15 мин")}
-   ${kc(c.untouched_1h?"#e0582f":"#8a94a6","🚨",c.untouched_1h,"ждут звонка > 1 часа")}
-   ${kc(c.overdue?"#e69a28":"#8a94a6","⏰",c.overdue,"просрочено перезвонов")}
-   ${kc("#7b3fe4","📲",pc(c.reached,c.real),"дозвонились")}
-   ${kc("#0f9d8f","✅",c.won,"записались · "+pc(c.won,c.real))}</div>
-  <div style="margin-top:10px">${c.pipeline.map(([k,n])=>`<div class="tagb"><span class="n">${esc(n)}</span><span class="t"><i style="width:${100*(c.by_status[k]||0)/mx}%;background:${CC[k]||"#2a7de1"}"></i></span><b>${c.by_status[k]||0}</b></div>`).join("")}</div>
+   ${kc(grade?grade[0]:"#2F6BF6","⚡",mm(ft.median_min),"до первого звонка"+(grade?` · <em style="font-style:normal;font-weight:700;color:${grade[0]}">${grade[1]}</em>`:""))}
+   ${kc("#2F6BF6","⏱",pc(ft.in15,ft.n),"обработаны за 15 мин")}
+   ${kc(c.untouched_1h?"#B4353F":"#9AA3AE","🚨",c.untouched_1h,"ждут звонка > 1 часа")}
+   ${kc(c.overdue?"#B4535F":"#9AA3AE","⏰",c.overdue,"просрочено перезвонов")}
+   ${kc("#0A0A0B","📲",pc(c.reached,c.real),"дозвонились")}
+   ${kc("#7FB3F7","✅",c.won,"записались · "+pc(c.won,c.real))}</div>
+  <div style="margin-top:10px">${c.pipeline.map(([k,n])=>`<div class="tagb"><span class="n">${esc(n)}</span><span class="t"><i style="width:${100*(c.by_status[k]||0)/mx}%;background:${CC[k]||"#2F6BF6"}"></i></span><b>${c.by_status[k]||0}</b></div>`).join("")}</div>
   ${c.sources&&c.sources.length?`<table style="margin-top:8px"><tr><th>Откуда</th><th>заявок</th><th>дозвон</th><th>записались</th></tr>${c.sources.map(x=>`<tr><td>${esc(x.source)}</td><td>${x.n}</td><td>${pc(x.reached,x.n)}</td><td>${x.won}</td></tr>`).join("")}</table>`:""}
   ${c.revenue?`<p style="margin:8px 0 0">💰 Сумма оплат: <b>${Number(c.revenue).toLocaleString("ru")}</b></p>`:""}</div>`;
 }
@@ -1704,28 +1725,28 @@ function eov(d){
  const PL=d.period_label||perLabel(per);
  const mx=Math.max(1,...days.map(x=>x.tg+x.ig)),mxl=Math.max(1,...days.map(x=>x.leads));
  const bars=days.map(x=>`<div title="${x.d}: Telegram ${x.tg}, Instagram ${x.ig}"><i style="height:${90*x.tg/mx}px;background:var(--tg);border-radius:0 0 3px 3px"></i><i style="height:${90*x.ig/mx}px;background:var(--ig);border-radius:3px 3px 0 0"></i></div>`).join("");
- const lbars=days.map(x=>`<div title="${x.d}: ${x.leads} заявок"><i style="height:${90*x.leads/mxl}px;background:linear-gradient(#34c77b,#2e9e5b);border-radius:3px"></i></div>`).join("");
+ const lbars=days.map(x=>`<div title="${x.d}: ${x.leads} заявок"><i style="height:${90*x.leads/mxl}px;background:linear-gradient(#5A8BF8,#2F6BF6);border-radius:3px"></i></div>`).join("");
  const axis=days.length?`<div class="axis"><span>${days[0].d.slice(8)}.${days[0].d.slice(5,7)}</span><span>${days[days.length-1].d.slice(8)}.${days[days.length-1].d.slice(5,7)}</span></div>`:"";
- const steps=d.funnel_steps,top=Math.max(1,f.tg.wrote+f.ig.wrote),FC=["#2a7de1","#3b8ff0","#7b3fe4","#e69a28","#e0582f","#2e9e5b"];
+ const steps=d.funnel_steps,top=Math.max(1,f.tg.wrote+f.ig.wrote),FC=["#2F6BF6","#5A8BF8","#7FB3F7","#0A0A0B","#B4353F","#8A1424"];
  const frows=steps.map(([k,n],i)=>{const s=f.tg[k]+f.ig[k],prev=i?f.tg[steps[i-1][0]]+f.ig[steps[i-1][0]]:s,w=Math.max(s?8:0,100*s/top);
   return `<div class="fnl"><div class="l"><span>${n}</span><span class="mut">${i&&prev?pct(s,prev)+" от пред. этапа":""}</span></div>
   <div class="t"><i style="width:${w}%;background:${FC[i%FC.length]}">${s}</i></div></div>`}).join("");
  const H=I.hours||[],mh=Math.max(1,...H);
- const hrs=H.map((v,i)=>`<i title="${String(i).padStart(2,"0")}:00 — ${v}" style="background:rgba(42,125,225,${v?0.15+0.85*v/mh:0.06})"></i>`).join("");
+ const hrs=H.map((v,i)=>`<i title="${String(i).padStart(2,"0")}:00 — ${v}" style="background:rgba(47,107,246,${v?0.15+0.85*v/mh:0.06})"></i>`).join("");
  const W=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"],wk=I.week||[],mw=Math.max(1,...wk);
  const tag=(L,cols)=>{const m=Math.max(1,...L.map(x=>x[1]));return L.map(([n,v],i)=>`<div class="tagb"><span class="n">${esc(n)}</span><span class="t"><i style="width:${100*v/m}%;background:${cols[i%cols.length]}"></i></span><b>${v}</b></div>`).join("")};
- const C1=["#7b3fe4","#2a7de1","#e69a28","#2e9e5b","#d6337a"],C2=["#0f9d8f","#2a9fd8","#e0582f","#9b59b6"];
+ const C1=["#2F6BF6","#8A1424","#0A0A0B","#7FB3F7","#B4535F"],C2=["#7FB3F7","#5A8BF8","#B4353F","#3A3F4A"];
  const lg=I.lang||{},ln=Math.max(1,(lg.uz_lat||0)+(lg.uz_cyr||0)+(lg.ru||0));
  const kc=(c,ic,v,l,x)=>`<div class="kc" style="--c:${c}"><span class="ic">${ic}</span><b>${v}${x||""}</b><span>${l}</span></div>`;
  return `<div class="hero"><h2>${esc(d.company||"Отчёт")}</h2><div class="sub">📅 ${esc(PL)}${d.prev_label?" · ▲▼ — сравнение с "+d.prev_label:""}</div>
   <div class="big"><div><b>${t.dialogs}</b><span>новых диалогов</span></div><div><b>${t.leads}</b><span>оставили номер</span></div><div><b>${conv}%</b><span>конверсия</span></div></div></div>
  <div class="kpis g4">
-  ${kc("#2a7de1","💬",t.dialogs,"новых диалогов",dl(t.dialogs,pr.dialogs))}
-  ${kc("#2e9e5b","📞",t.leads,"оставили номер",dl(t.leads,pr.leads))}
-  ${kc("#e0582f","🔥",t.hot,"горячих",dl(t.hot,pr.hot))}
-  ${kc("#7b3fe4","✅",t.won,"записались")}
-  ${kc("#e69a28","⏳",waiting.length,"ждут звонка")}
-  ${kc("#d6337a","🎙",I.voice||0,"голосовых от клиентов")}</div>
+  ${kc("#2F6BF6","💬",t.dialogs,"новых диалогов",dl(t.dialogs,pr.dialogs))}
+  ${kc("#0A0A0B","📞",t.leads,"оставили номер",dl(t.leads,pr.leads))}
+  ${kc("#8A1424","🔥",t.hot,"горячих",dl(t.hot,pr.hot))}
+  ${kc("#7FB3F7","✅",t.won,"записались")}
+  ${kc("#B4535F","⏳",waiting.length,"ждут звонка")}
+  ${kc("#5A8BF8","🎙",I.voice||0,"голосовых от клиентов")}</div>
  <div class="card"><h3>Откуда пишут</h3><div class="split">
   <div class="donut" style="background:conic-gradient(var(--tg) 0 ${deg}deg,var(--ig) ${deg}deg 360deg${tgD+igD?"":",var(--bg2) 0 360deg"})"><div><b>${tgD+igD}</b>диалогов</div></div>
   <div class="leg" style="flex:1">
@@ -1744,11 +1765,11 @@ function eov(d){
  ${(I.branches||[]).some(x=>x[1])?`<div class="card" style="margin:0"><h3>📍 Какие филиалы</h3>${tag(I.branches.filter(x=>x[1]),C2)}</div>`:""}</div>
  <div class="card"><h3>⏰ Когда пишут клиенты</h3><div class="hrs">${hrs}</div><div class="hax"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
   ${I.peak!=null&&I.peak!==undefined?`<p class="mut" style="margin:6px 0 0">Пик — ${String(I.peak).padStart(2,"0")}:00–${String((I.peak+1)%24).padStart(2,"0")}:00. Бот отвечает круглосуточно.</p>`:""}</div>
- <div class="card"><h3>📅 По дням недели</h3>${W.map((n,i)=>`<div class="tagb"><span class="n" style="width:30px">${n}</span><span class="t"><i style="width:${100*(wk[i]||0)/mw}%;background:linear-gradient(90deg,#2a7de1,#7b3fe4)"></i></span><b>${wk[i]||0}</b></div>`).join("")}</div>
- <div class="card"><h3>🗣 Язык клиентов</h3><div class="stack"><i style="width:${100*(lg.uz_lat||0)/ln}%;background:#2e9e5b"></i><i style="width:${100*(lg.uz_cyr||0)/ln}%;background:#0f9d8f"></i><i style="width:${100*(lg.ru||0)/ln}%;background:#2a7de1"></i></div>
-  <div class="cline"><span class="sw" style="background:#2e9e5b"></span>Узбекский (латиница)<b>${lg.uz_lat||0}</b></div>
-  <div class="cline"><span class="sw" style="background:#0f9d8f"></span>Узбекский (кириллица)<b>${lg.uz_cyr||0}</b></div>
-  <div class="cline"><span class="sw" style="background:#2a7de1"></span>Русский<b>${lg.ru||0}</b></div></div>
+ <div class="card"><h3>📅 По дням недели</h3>${W.map((n,i)=>`<div class="tagb"><span class="n" style="width:30px">${n}</span><span class="t"><i style="width:${100*(wk[i]||0)/mw}%;background:linear-gradient(90deg,#2F6BF6,#0A0A0B)"></i></span><b>${wk[i]||0}</b></div>`).join("")}</div>
+ <div class="card"><h3>🗣 Язык клиентов</h3><div class="stack"><i style="width:${100*(lg.uz_lat||0)/ln}%;background:#2F6BF6"></i><i style="width:${100*(lg.uz_cyr||0)/ln}%;background:#7FB3F7"></i><i style="width:${100*(lg.ru||0)/ln}%;background:#0A0A0B"></i></div>
+  <div class="cline"><span class="sw" style="background:#2F6BF6"></span>Узбекский (латиница)<b>${lg.uz_lat||0}</b></div>
+  <div class="cline"><span class="sw" style="background:#7FB3F7"></span>Узбекский (кириллица)<b>${lg.uz_cyr||0}</b></div>
+  <div class="cline"><span class="sw" style="background:#0A0A0B"></span>Русский<b>${lg.ru||0}</b></div></div>
  <div class="card"><h3>📈 Качество диалогов</h3><table>
   <tr><th></th><th>Telegram</th><th>Instagram</th></tr>
   <tr><td>Сообщений клиента на диалог</td><td>${tgD?(p.tg.client_msgs/tgD).toFixed(1):"—"}</td><td>${igD?(p.ig.client_msgs/igD).toFixed(1):"—"}</td></tr>
@@ -1798,7 +1819,7 @@ function finance(d){
   <tr><td>ИИ, голос, сервер (авто)</td><td>${money(d.spend_auto,2)}</td><td>${d.spend?Math.round(100*d.spend_auto/d.spend):0}%</td></tr>
   ${d.exp_cats.filter(c=>d.by_cat[c[0]]).map(c=>`<tr><td>${c[1]}</td><td>${money(d.by_cat[c[0]],2)}</td><td>${Math.round(100*d.by_cat[c[0]]/d.spend)}%</td></tr>`).join("")}
   <tr class="tot"><td>Итого</td><td>${money(d.spend,2)}</td><td></td></tr></table>
-  <div class="bar" style="margin-top:8px;height:10px">${[["auto",d.spend_auto,"#8a8f98"],...d.exp_cats.map((c,i)=>[c[0],d.by_cat[c[0]],["var(--ig)","var(--tg)","#7b61ff","var(--warn)","var(--ok)","#c0c4cc"][i]])]
+  <div class="bar" style="margin-top:8px;height:10px">${[["auto",d.spend_auto,"#9AA3AE"],...d.exp_cats.map((c,i)=>[c[0],d.by_cat[c[0]],["var(--ig)","var(--tg)","#0A0A0B","var(--warn)","var(--ok)","#c0c4cc"][i]])]
    .filter(x=>x[1]).map(x=>`<i style="width:${100*x[1]/(d.spend||1)}%;background:${x[2]}"></i>`).join("")}</div></div>
  ${d.expenses.length?`<div class="card"><h3>Внесённые расходы</h3><table>${d.expenses.map(x=>`<tr><td>${new Date(x.ts*1000).toLocaleDateString("ru")}<div class="mut">${esc(cn[x.cat]||"")}${x.note?" · "+esc(x.note):""}</div></td>
    <td>${money(x.amount,2)}</td><td><button class="xbtn" data-delexp="${x.id}">✕</button></td></tr>`).join("")}</table></div>`:""}`;
