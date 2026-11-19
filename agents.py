@@ -520,7 +520,7 @@ PRESETS = {
     "aluplast": {"slug": "aluplast", "company": "ALU PLAS LUKS", "own_bot": True, "prompt": ALUPLAST_PROMPT, "blocks": ALUPLAST_BLOCKS,
                  "fix": [(r"\+?\(?998\)?[\s-]*99[\s-]*499[\s-]*98[\s-]*58", "+998 99 499 98 58")],
                  "site": "https://aluplastluks.uz", "owners": [], "report_chat": "", "ig_tenant": "", "ig_username": "falcon_namangan1", "enabled": True,
-                 "report_also": []},
+                 "report_also": ["433680555"]},   # ALU PLAS LUKS egasi: lidlar va panel
 }
 
 
