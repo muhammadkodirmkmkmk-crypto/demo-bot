@@ -470,7 +470,15 @@ def maintenance():
                 save_tenant(t)
             else:
                 print("IG token refresh failed:", t.get("username"), json.dumps(res)[:200])
-                if t.get("expires_at", 0) - now < 3 * 86400:
+                if not t.get("username"):
+                    # Ishlamay qolgan (nomsiz) ulanish — qayta ulanganda yangi id bilan saqlangan; o'chiramiz, ogohlantirmaymiz
+                    t["token"] = ""
+                    t["disabled"] = "refresh_failed"
+                    save_tenant(t)
+                    continue
+                if t.get("expires_at", 0) - now < 3 * 86400 and now - t.get("warn_ts", 0) > 86400:
+                    t["warn_ts"] = now                     # kuniga bir martadan ko'p emas
+                    save_tenant(t)
                     notify_admin(f"⚠️ Токен Instagram @{t.get('username')} скоро истечёт — переподключите: {PUBLIC_URL}/ig")
 
 # --------------------------------------------------------------------------
