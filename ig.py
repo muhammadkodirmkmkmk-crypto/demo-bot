@@ -173,6 +173,8 @@ def send_parts(c, parts):
     if not t or not t.get("token"):
         print("IG send skipped: no token for tenant", c.get("tenant"))
         return
+    if t.get("blocked_until", 0) > time.time():
+        return                                # Meta yuborishni cheklagan — urinib, blokni uzaytirmaymiz
     seq = []                              # mahsulot rasmi: rasm (attachment), keyin izoh — tartib saqlanadi
     for p in parts:
         if p.startswith("\x00photo:"):
@@ -218,6 +220,13 @@ def send_parts(c, parts):
                         OUR_SENT.pop(k, None)
         else:
             print("IG send error:", t.get("username"), st, json.dumps(res)[:300])
+            if (res.get("error") or {}).get("code") == 368:
+                first = t.get("blocked_until", 0) < time.time() - 3600
+                t["blocked_until"] = time.time() + 24 * 3600   # sutka davomida yubormaymiz, keyin bir marta sinab ko'ramiz
+                save_tenant(t)
+                if first:
+                    notify_admin(f"⛔ Instagram @{t.get('username')}: Meta запретила отправку сообщений. Бот не пишет в этот "
+                                 f"аккаунт сутки и потом пробует снова. Проверьте «Статус аккаунта» в Instagram.")
             if (res.get("error") or {}).get("code") == 190 and time.time() - TOKEN_ALERT.get(t.get("ig_id"), 0) > 6 * 3600:
                 TOKEN_ALERT[t.get("ig_id")] = time.time()       # token bekor qilindi — admin darhol bilsin
                 notify_admin(f"⚠️ Instagram @{t.get('username')} отключился (сменили пароль или Meta сбросила вход) — "
