@@ -1687,6 +1687,8 @@ def agent_paused_chat(c):
 def due_followup(c, now):
     if not AI_REPLIES or c["status"] != "active" or not c.get("chat_id") or agent_paused_chat(c):
         return False
+    if c.get("channel") == "ig":
+        return False                                   # Instagram: eslatma yubormaymiz (Meta spam deb akkauntni cheklaydi)
     plan = followup_plan(c)
     if c["paused_until"] > now or c["followups"] >= len(plan):
         return False

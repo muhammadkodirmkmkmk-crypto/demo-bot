@@ -11,6 +11,7 @@ Muhit o'zgaruvchilari:
   OWN_IG_USERNAME            — o'zimizning akkaunt (AI Business prompti bilan javob beradi), default aibusiness_uz
 """
 import os
+import re
 import json
 import time
 import hmac
@@ -149,6 +150,24 @@ def prompt_for(c):
 # --------------------------------------------------------------------------
 # Yuborish
 # --------------------------------------------------------------------------
+LINK_RE = re.compile(r"(?i)\b(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:uz|com|ru|me|org|net|io|app|gl|link)\b(?:/\S*)?")
+
+
+def ig_safe(text):
+    """Instagram Direct'da havola yuborilmaydi (Meta havolalar uchun akkauntni cheklaydi) — havolali bo'lak olib tashlanadi"""
+    out = []
+    for line in str(text or "").split("\n"):
+        if not LINK_RE.search(line):
+            out.append(line)
+            continue
+        parts = re.split(r"(?<=[.!?])\s+", line)          # gaplarga bo'lamiz; havolali gap butunlay tushadi
+        keep = [x for x in parts if not LINK_RE.search(x)]
+        if keep:
+            out.append(" ".join(keep))
+    t = re.sub(r"\n{3,}", "\n\n", "\n".join(out))
+    return t.strip()
+
+
 def send_parts(c, parts):
     t = tenants().get(c.get("tenant") or "")
     if not t or not t.get("token"):
@@ -160,9 +179,19 @@ def send_parts(c, parts):
             url, cap = p[len("\x00photo:"):].split("|", 1)
             seq.append(("img", url))
             if cap:
-                seq.append(("txt", cap))
+                seq.append(("txt", ig_safe(cap)))
         else:
-            seq.append(("txt", p))
+            seq.append(("txt", ig_safe(p)))
+    # Instagram spam-filtri: bir javob = bitta xabar (ketma-ket matnlar birlashtiriladi), bo'sh matn yuborilmaydi
+    merged = []
+    for kind, p in seq:
+        if kind == "txt" and not p:
+            continue
+        if kind == "txt" and merged and merged[-1][0] == "txt" and len(merged[-1][1]) + len(p) < 880:
+            merged[-1] = ("txt", merged[-1][1] + "\n\n" + p)
+        else:
+            merged.append((kind, p))
+    seq = merged
     for kind, p in seq:
         if kind == "img":
             st, res = graph("POST", "me/messages", json_body={"recipient": {"id": c["chat_id"]}, "message": {
