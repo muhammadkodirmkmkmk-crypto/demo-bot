@@ -497,8 +497,19 @@ def split_written(parts, spoken, script="uz_lat"):
     if not re.sub(r"\[[a-z ]{3,25}\]", "", spoken).strip():
         spoken = " ".join(p for p in parts if not WRITTEN_RE.search(p) and not MONEY_WORDS.search(p)).strip()
     if spoken and written and not re.search(r"(?i)pastda|ниже|yozib|ёзиб|написал", spoken):
-        spoken += " Цену и детали написал вам ниже." if script == "ru" else " Narxini pastda yozib qo'ydim."
+        if has_price(written):   # «narxini pastda yozdim» — faqat yozmada haqiqatan narx bo'lsa
+            spoken += " Цену и детали написал вам ниже." if script == "ru" else " Narxini pastda yozib qo'ydim."
+        else:
+            spoken += " Подробности написал вам ниже." if script == "ru" else " Batafsilini pastda yozib qo'ydim."
     return spoken, written
+
+
+PRICE_RE = re.compile(r"\d[\d  .,]{3,}\d|\$\s?\d|\d\s?\$|\d+\s*(ming|минг|тысяч|mln|млн|million)")
+
+
+def has_price(parts):
+    parts = [re.sub(r"\+?\(?998\)?[\d\s()-]{8,}|\b\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b", " ", p) for p in parts]  # telefon narx emas
+    return any(PRICE_RE.search(p) or re.search(r"(?i)so['‘’]?m\b|сўм|сум\b|dollar|доллар", p) for p in parts)
 
 
 def deliver_voice(c, parts, script, spoken=""):
@@ -507,8 +518,12 @@ def deliver_voice(c, parts, script, spoken=""):
         return False
     text, written = split_written(parts, spoken, script)
     if not text and written:  # javob faqat narx/raqamlardan iborat — qisqa ovoz + yozma tafsilot
-        text = ("[warmly] Конечно, все цены и детали написал вам ниже сообщением." if script == "ru" else
-                "[warmly] Albatta, narxlar va batafsil ma'lumotni pastda yozib qo'ydim.")
+        if has_price(written):
+            text = ("[warmly] Конечно, все цены и детали написал вам ниже сообщением." if script == "ru" else
+                    "[warmly] Albatta, narxlar va batafsil ma'lumotni pastda yozib qo'ydim.")
+        else:
+            text = ("[warmly] Конечно, подробности написал вам ниже сообщением." if script == "ru" else
+                    "[warmly] Albatta, batafsil ma'lumotni pastda yozib qo'ydim.")
     if not text:
         return False
     if script.startswith("uz"):
