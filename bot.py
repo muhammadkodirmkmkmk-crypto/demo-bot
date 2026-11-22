@@ -1435,6 +1435,8 @@ def send_report(c, title):
         lines.append(f"📞 {ADMIN.fmt_phone(f['phone'])[1]}" + (f" · ⏰ {_cut(f['call_time'], 40)}" if f.get("call_time") else ""))
     if f.get("business") or f.get("need"):
         lines.append("🎯 " + " — ".join(_cut(x, 90) for x in (f.get("business"), f.get("need")) if x))
+    if f.get("region"):
+        lines.append("📍 " + esc(_cut(f["region"], 80)))
     if f.get("offer") or f.get("budget"):
         lines.append(" · ".join(x for x in ("💼 " + _cut(f["offer"], 80) if f.get("offer") else "",
                                             "💰 " + _cut(f["budget"], 40) if f.get("budget") else "") if x))
@@ -1519,7 +1521,7 @@ def ai_reply(key):
                 c["history"].append({"r": "a", "t": AGENTS.part_text(m) if m.startswith(("\x00",)) else re.sub(r"</?b>", "", m), "ts": time.time(), **({"voice": True} if voiced else {})})
         stat(chat_channel(c), replies=1, msgs_out=len(out), voice_out=int(bool(voiced)))
     with LOCK:
-        for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note"):
+        for k in ("name", "phone", "business", "need", "current_tool", "budget", "offer", "objection", "call_time", "note", "region"):
             v = str(d.get(k) or "").strip()
             if v:
                 c["facts"][k] = v[:200]

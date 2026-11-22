@@ -678,7 +678,7 @@ def crm_list(chats):
         out.append({
             "key": key, "ch": ch, "name": c.get("name") or f.get("name") or "", "username": c.get("username", ""),
             "phone": pretty, "tel": tel, "facts": {k: f.get(k, "") for k in ("business", "need", "budget", "call_time", "offer",
-                                                                             "objection", "note", "current_tool")},
+                                                                             "objection", "note", "current_tool", "region")},
             "stage": pipe_stage(c), "deal": c.get("deal") or {}, "readiness": int(c.get("readiness") or 0),
             "first": chat_first_ts(c) or c.get("created", 0), "last": max([h.get("ts") or 0 for h in hist] or [c.get("created", 0)]),
             "notes": (c.get("notes") or [])[-30:], "called": (c.get("call") or {}).get("status") == "done",
@@ -1900,7 +1900,7 @@ function openClient(k){const x=findCl(k);if(!x.key)return;const f=x.facts;
    <div class="mut"><span class="dot" style="background:${COL[x.ch]}"></span>Instagram${x.username?" · @"+esc(x.username):""} · с ${when(x.first)}</div></div><button class="xbtn" data-close>✕</button></div>
    ${x.tel?`<a class="bigbtn" href="tel:${esc(x.tel)}">📞 Позвонить ${esc(x.phone)}</a>`:""}
    <div class="small">Этап: ${stName(x.stage)} · готовность ${x.readiness}%</div>
-   ${["need","offer","call_time","objection","note"].filter(i=>f[i]).map(i=>`<div class="small">${{need:"🎯",offer:"💼",call_time:"⏰",objection:"⚠️",note:"📝"}[i]} ${esc(f[i])}</div>`).join("")}
+   ${["region","need","offer","call_time","objection","note"].filter(i=>f[i]).map(i=>`<div class="small">${{region:"📍",need:"🎯",offer:"💼",call_time:"⏰",objection:"⚠️",note:"📝"}[i]} ${esc(f[i])}</div>`).join("")}
    <div class="mut fl" style="display:flex;justify-content:space-between;align-items:center">Переписка
    <button class="lost" data-hist="${esc(k)}" style="border:0;border-radius:10px;padding:5px 9px;font-size:12px">📜 Показать всю</button></div><div id="hist">${tl}</div>
    ${x.link?`<div class="btns"><a class="lost lnk" href="${esc(x.link)}">💬 Открыть в Instagram</a></div>`:""}
