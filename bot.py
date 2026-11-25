@@ -677,6 +677,9 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
                 except Exception:
                     pass
                 print("Claude HTTP error:", m, e.code, detail)
+                if e.code == 401:   # kalit yaroqsiz — boshqa modelni sinash befoyda, adminga darhol xabar
+                    key_alert(detail)
+                    return ""
                 if e.code == 400 and "between_tools" in detail and payload.get("thinking", {}).get("type") != "between_tools":
                     THINKING[m] = {"type": "between_tools"}   # yangi API: "o'ylamasdan" rejimi shunday yoziladi
                     payload["thinking"] = THINKING[m]
@@ -694,6 +697,22 @@ def claude(system, messages, max_tokens=500, model=None, cache_prefix=None):
                 print("Claude error:", m, e)
                 time.sleep(2 * (attempt + 1))
     return ""
+
+
+KEY_ALERT_TS = [0.0]
+
+
+def key_alert(detail=""):
+    """ANTHROPIC_API_KEY ishlamayapti — soatiga bir martadan ko'p emas, adminga ogohlantirish"""
+    if time.time() - KEY_ALERT_TS[0] < 3600:
+        return
+    KEY_ALERT_TS[0] = time.time()
+    svc = os.environ.get("RAILWAY_SERVICE_NAME") or (AGENT_MODE or "demo-bot")
+    try:
+        send_msg(REPORT_CHAT_ID, f"🔑 Ключ ИИ (ANTHROPIC_API_KEY) не работает в «{svc}» — бот не может отвечать клиентам. "
+                                 f"Создайте новый ключ на console.anthropic.com и вставьте его в Railway → {svc} → Variables.")
+    except Exception as e:
+        print("key_alert error:", e)
 
 
 def detect_business(text):
